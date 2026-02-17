@@ -22,6 +22,8 @@ export class Detection {
         this.#cv = cv;
     }
 
+    static sharedTensorData = null;
+
     /**
      * Crea una instancia del modelo de detección
      */
@@ -59,9 +61,9 @@ export class Detection {
      * @param {ImageData} imageData - Datos de imagen del canvas
      * @returns {Promise<Array>} Array de regiones detectadas con coordenadas
      */
-    async detect(imageData) {
+    async detect(imageData, options = {}) {
         // Preprocesar imagen
-        const { tensor, scale } = this.#preprocessImage(imageData);
+        const { tensor, scale, padding } = this.#preprocessImage(imageData, options);
 
         // Ejecutar inferencia
         const startTime = performance.now();
@@ -71,7 +73,7 @@ export class Detection {
         console.log(`[Web Detection] Inferencia completada en ${inferenceTime.toFixed(2)}ms`);
 
         // Postprocesar resultados (OpenCV)
-        const boxes = this.#postprocessOpenCV(outputs, scale, imageData.width, imageData.height);
+        const boxes = this.#postprocessOpenCV(outputs, scale, padding, imageData.width, imageData.height);
 
         console.log(`[Web Detection] Detectadas ${boxes.length} regiones`);
 
@@ -80,47 +82,99 @@ export class Detection {
 
     // ... preprocessImage defined below (unchanged) ...
 
-    #preprocessImage(imageData) {
+    #preprocessImage(imageData, options = {}) {
         const { width, height } = imageData;
 
-        // Calcular escala para redimensionar
-        const maxSize = this.#config.MAX_IMAGE_SIZE;
-        const scale = Math.min(maxSize / width, maxSize / height, 1.0);
-        const newWidth = Math.floor(width * scale / 32) * 32;
-        const newHeight = Math.floor(height * scale / 32) * 32;
+        // 1. Calculate Target Size (Multiple of 32)
+        // CRITICAL: Allow override to support High DPI without downscaling (The "Technical Trap")
+        const maxSize = options.MAX_IMAGE_SIZE || this.#config.MAX_IMAGE_SIZE;
 
-        const canvas = new OffscreenCanvas(newWidth, newHeight);
+        // Calculate scale to fit WITHIN maxSize (Letterbox logic)
+        // Node parity: maintains aspect ratio, adds padding.
+        const scale = Math.min(maxSize / width, maxSize / height);
+
+        // Target dimensions (tensor size)
+        // In Node, they resize to fit, then pad to multiple of 32? 
+        // Or they resize to multiple of 32 directly?
+        // Node logic:
+        // width = Math.max(Math.ceil(width / 32) * 32, 32);
+        // height = Math.max(Math.ceil(height / 32) * 32, 32);
+
+        // Let's stick to standard DBNet/Paddle logic:
+        // Resize image so long side is maxSize.
+        // Pad to multiple of 32.
+
+        const scaledWidth = Math.round(width * scale);
+        const scaledHeight = Math.round(height * scale);
+
+        const targetWidth = Math.max(Math.ceil(scaledWidth / 32) * 32, 32);
+        const targetHeight = Math.max(Math.ceil(scaledHeight / 32) * 32, 32);
+
+        // 2. Create Letterbox Canvas
+        const canvas = new OffscreenCanvas(targetWidth, targetHeight);
         const ctx = canvas.getContext('2d');
+
+        // Fill black (Padding)
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, targetWidth, targetHeight);
+
+        // Draw Centered (or Top-Left? Node: seems to just resize. Sharp 'contain' centers by default)
+        // We will Center it to match typical 'contain' behavior.
+        const paddingX = Math.round((targetWidth - scaledWidth) / 2);
+        const paddingY = Math.round((targetHeight - scaledHeight) / 2);
+
         const tempCanvas = new OffscreenCanvas(width, height);
         const tempCtx = tempCanvas.getContext('2d');
         tempCtx.putImageData(imageData, 0, 0);
 
-        ctx.drawImage(tempCanvas, 0, 0, newWidth, newHeight);
-        const resized = ctx.getImageData(0, 0, newWidth, newHeight);
+        ctx.drawImage(tempCanvas, 0, 0, width, height, paddingX, paddingY, scaledWidth, scaledHeight);
 
-        const tensorData = new Float32Array(3 * newHeight * newWidth);
+        const resized = ctx.getImageData(0, 0, targetWidth, targetHeight);
+
+        // 3. Normalize & BGR Conversion
+        // OPTIMIZATION: Use Shared Buffer to avoid GC of 60MB+ arrays
+        const requiredSize = 3 * targetHeight * targetWidth;
+
+        if (!Detection.sharedTensorData || Detection.sharedTensorData.length < requiredSize) {
+            // console.debug(`[Web Detection] Allocating new Tensor Buffer: ${(requiredSize * 4 / 1024 / 1024).toFixed(2)} MB`);
+            Detection.sharedTensorData = new Float32Array(requiredSize);
+        }
+
+        const tensorData = Detection.sharedTensorData.subarray(0, requiredSize);
         const mean = [0.485, 0.456, 0.406];
         const std = [0.229, 0.224, 0.225];
 
-        for (let i = 0; i < newHeight * newWidth; i++) {
+        for (let i = 0; i < targetHeight * targetWidth; i++) {
             const r = resized.data[i * 4] / 255.0;
             const g = resized.data[i * 4 + 1] / 255.0;
             const b = resized.data[i * 4 + 2] / 255.0;
 
-            tensorData[i] = (r - mean[0]) / std[0];
-            tensorData[newHeight * newWidth + i] = (g - mean[1]) / std[1];
-            tensorData[2 * newHeight * newWidth + i] = (b - mean[2]) / std[2];
+            // Normalize
+            const normR = (r - mean[0]) / std[0]; // R
+            const normG = (g - mean[1]) / std[1]; // G
+            const normB = (b - mean[2]) / std[2]; // B
+
+            // BGR Order (Node Parity)
+            // Channel 0 = B, Channel 1 = G, Channel 2 = R
+            tensorData[i] = normB;
+            tensorData[targetHeight * targetWidth + i] = normG;
+            tensorData[2 * targetHeight * targetWidth + i] = normR;
         }
 
-        const tensor = new ort.Tensor('float32', tensorData, [1, 3, newHeight, newWidth]);
+        const tensor = new ort.Tensor('float32', tensorData, [1, 3, targetHeight, targetWidth]);
 
-        return { tensor, scale };
+        // Return padding info for coordinate recovery
+        return {
+            tensor,
+            scale,
+            padding: { x: paddingX, y: paddingY }
+        };
     }
 
     /**
      * Postprocesa usando OpenCV (Matches Node.js Geometry)
      */
-    #postprocessOpenCV(outputs, scale, originalWidth, originalHeight) {
+    #postprocessOpenCV(outputs, scale, padding, originalWidth, originalHeight) {
         const cv = this.#cv;
         const outputName = Object.keys(outputs)[0];
         const output = outputs[outputName];
@@ -128,22 +182,17 @@ export class Detection {
         const data = output.data;
 
         // 1. Crear Mat binaria
-        // Es más eficiente manipular el buffer directamente si fuera posible, 
-        // pero output.data es un Float32Array. 
         const binaryMat = new cv.Mat(height, width, cv.CV_8UC1);
         const binaryData = binaryMat.data;
 
         // Threshold manual optimizado loop
         for (let i = 0; i < height * width; i++) {
-            binaryData[i] = data[i] > this.#config.BOX_THRESHOLD ? 255 : 0;
+            // CRITICAL FIX: Use THRESHOLD (0.3) for binarization map
+            binaryData[i] = data[i] > this.#config.THRESHOLD ? 255 : 0;
         }
 
-        // 2. Dilatación (OpenCV)
-        // Paridad con Node: cv.dilate
-        const kernelSize = this.#config.DILATE_KERNEL;
-        const M = cv.Mat.ones(kernelSize, kernelSize, cv.CV_8U);
-        const dilated = new cv.Mat();
-        cv.dilate(binaryMat, dilated, M, new cv.Point(-1, -1), 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+        // 2. No Dilation (Node Parity)
+        const dilated = binaryMat;
 
         // 3. Encontrar Contornos
         const contours = new cv.MatVector();
@@ -152,185 +201,161 @@ export class Detection {
 
         const boxes = [];
         const minSize = this.#config.MIN_BOX_SIZE;
-        const minArea = this.#config.MIN_AREA;
+        // Node doesn't check MIN_AREA in the loop usually, just sside
+        // But we kept MIN_AREA in config. Let's rely on sside (min side) primarily like Node.
 
         for (let i = 0; i < contours.size(); ++i) {
             const cnt = contours.get(i);
 
-            // Filtrar por tamaño de contorno inicial (rápido)
-            if (cnt.rows < minSize) { // cnt.rows is number of points
+            // Node Logic: getMiniBoxes -> sside check -> unclip -> sside check
+
+            // 4. Paridad Geométrica: getMiniBoxes (Custom Sort)
+            const resultObj = this.#getMiniBoxes(cnt);
+            const { points, sside } = resultObj;
+
+            // Filter 1 (Node Parity)
+            if (sside < minSize) {
                 cnt.delete();
                 continue;
             }
 
-            // 4. Paridad Geométrica: minAreaRect (Rectángulo Rotado)
-            // Node usa esto para obtener la orientación perfecta del texto
-            const rotatedRect = cv.minAreaRect(cnt);
+            // 5. Unclip (Expansion)
+            // Node passes RAW points to unclip.
+            // We pass RAW points (from binary map) to unclip.
+            const clipBox = this.#unclip(points, this.#config.UNCLIP_RATIO);
 
-            const w = rotatedRect.size.width;
-            const h = rotatedRect.size.height;
-            const area = w * h;
+            // 6. Filter 2 (Node Parity: sside < minSize + 2)
+            // Need to recalc sside of expanded box. 
+            // Since we don't have cv.minAreaRect on purely JS points easily without CV Mat,
+            // we can estimate or skip. Node does:
+            // "const boxMap = cv.matFromArray(clipBox.length / 2, 1, cv.CV_32SC2, clipBox); const resultObj = getMiniBoxes(boxMap);"
+            // Creating Mat per loop might be slow in JS/WASM?
+            // Let's implement full parity.
 
-            if (w < minSize || h < minSize || area < minArea) {
+            // To create Mat from points:
+            const flatPoints = clipBox.flat(); // [x,y, x,y...]
+            const boxMap = cv.matFromArray(flatPoints.length / 2, 1, cv.CV_32SC2, flatPoints);
+            const resultObjExpanded = this.#getMiniBoxes(boxMap);
+            boxMap.delete();
+
+            if (resultObjExpanded.sside < minSize + 2) {
                 cnt.delete();
                 continue;
             }
 
-            // Validar Aspect Ratio
-            const aspectRatio = Math.max(w, h) / Math.min(w, h);
-            if (aspectRatio > 50) { // Relaxed to 50 for very long lines
-                cnt.delete();
-                continue;
+            // 7. Coordinate Recovery
+            const expandedPoints = resultObjExpanded.points; // Sorted
+
+            // Recover from Padding/Scale
+            const finalBox = expandedPoints.map(p => {
+                const xRaw = p[0] - padding.x;
+                const yRaw = p[1] - padding.y;
+                return [
+                    xRaw / scale,
+                    yRaw / scale
+                ];
+            });
+
+            // Make sure it's 4 points
+            if (finalBox.length === 4) {
+                boxes.push(finalBox);
             }
 
-            // 5. Unclip (Expansion) usando Clipper
-            // Convertimos rotatedRect a polígono
-            // cv.RotatedRect.points retorna 4 vertices
-            const vertices = cv.RotatedRect.points(rotatedRect);
-
-            // Escalar al tamaño original Y Unclip
-            const boxPoints = vertices.map(p => ({
-                X: p.x / scale, // Escalar al original
-                Y: p.y / scale
-            }));
-
-            const expandedBox = this.#unclipBox(boxPoints); // Usamos Clipper logic existente modificada
-
-            boxes.push(expandedBox);
             cnt.delete();
         }
 
         // Cleanup
         binaryMat.delete();
-        dilated.delete();
-        M.delete();
         contours.delete();
         hierarchy.delete();
 
         return boxes;
     }
 
-    // Helper para Clipper (Unclip)
-    #unclipBox(boxPoints) {
-        if (!this.#config.UNCLIP_RATIO || this.#config.UNCLIP_RATIO <= 1.0) {
-            return boxPoints.map(p => [p.X, p.Y]);
+    // -------------------------------------------------------------------------
+    // GEOMETRY HELPERS (Node.js Parity)
+    // -------------------------------------------------------------------------
+
+    #getMiniBoxes(contour) {
+        const cv = this.#cv;
+        const boundingBox = cv.minAreaRect(contour);
+        // Note: boxPoints returns [ [x,y], ... ]
+        const points = this.#boxPoints(boundingBox).sort((a, b) => a[0] - b[0]);
+
+        let index_1 = 0, index_4 = 1;
+        if (points[1][1] > points[0][1]) {
+            index_1 = 0; index_4 = 1;
+        } else {
+            index_1 = 1; index_4 = 0;
         }
 
-        // Clipper expansion logic (Reused but adapted for generic points)
-        try {
-            // Calcular área y perímetro de un polígono arbitrario (Shoelace formula)
-            // ...o usar Clipper Area? El boxPoints proviene de minAreaRect, es convexo.
-
-            // Simplificación: Unclip geométrico para rectángulo
-            // Node usa ClipperOffset.
-            const offset = new Clipper.ClipperOffset();
-            offset.AddPath(boxPoints, Clipper.JoinType.jtRound, Clipper.EndType.etClosedPolygon);
-
-            // Calcular delta (distance)
-            // Area de rect rotado w*h
-            // Perimeter 2(w+h)
-            // distance = area * ratio / perimeter
-            // Necesitamos w y h ORIGINALES (escalados).
-            const p0 = boxPoints[0], p1 = boxPoints[1], p2 = boxPoints[2];
-            const w = Math.hypot(p1.X - p0.X, p1.Y - p0.Y);
-            const h = Math.hypot(p2.X - p1.X, p2.Y - p1.Y);
-            const area = w * h;
-            const perimeter = 2 * (w + h);
-
-            const distance = (area * this.#config.UNCLIP_RATIO) / perimeter;
-
-            const expanded = new Clipper.Paths();
-            offset.Execute(expanded, distance);
-
-            if (expanded.length > 0 && expanded[0].length > 0) {
-                return expanded[0].map(pt => [pt.X, pt.Y]);
-            }
-        } catch (e) {
-            console.warn("Unclip failed", e);
+        let index_2 = 2, index_3 = 3;
+        if (points[3][1] > points[2][1]) {
+            index_2 = 2; index_3 = 3;
+        } else {
+            index_2 = 3; index_3 = 2;
         }
 
-        return boxPoints.map(p => [p.X, p.Y]);
+        const box = [points[index_1], points[index_2], points[index_3], points[index_4]];
+
+        // sside is min side
+        const w = boundingBox.size.width;
+        const h = boundingBox.size.height;
+        return { points: box, sside: Math.min(w, h) };
     }
 
-    /**
-     * Obtiene la caja delimitadora de una región
-     */
-    #getBoundingBox(region, scale) {
-        let minX = Infinity, minY = Infinity;
-        let maxX = -Infinity, maxY = -Infinity;
+    #boxPoints(rotatedRect) {
+        // Manual calculation matches Node's opencv-helpers.js
+        const angle = rotatedRect.angle * Math.PI / 180.0;
+        const b = Math.cos(angle) * 0.5;
+        const a = Math.sin(angle) * 0.5;
+        const center = rotatedRect.center;
+        const size = rotatedRect.size;
 
-        for (const [x, y] of region) {
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
+        const p0 = [center.x - a * size.height - b * size.width, center.y + b * size.height - a * size.width];
+        const p1 = [center.x + a * size.height - b * size.width, center.y - b * size.height - a * size.width];
+        const p2 = [center.x + a * size.height + b * size.width, center.y - b * size.height + a * size.width];
+        const p3 = [center.x - a * size.height + b * size.width, center.y + b * size.height + a * size.width];
+
+        return [p0, p1, p2, p3];
+    }
+
+    #unclip(box, unclip_ratio) {
+        // Area of polygon
+        const area = Math.abs(this.#polygonArea(box));
+        const length = this.#polygonLength(box);
+        const distance = (area * unclip_ratio) / length;
+
+        // JS-Clipper logic
+        const tmpArr = box.map(item => ({ X: item[0], Y: item[1] }));
+        const offset = new Clipper.ClipperOffset();
+        offset.AddPath(tmpArr, Clipper.JoinType.jtRound, Clipper.EndType.etClosedPolygon);
+
+        const expanded = new Clipper.Paths();
+        offset.Execute(expanded, distance);
+
+        if (expanded.length > 0 && expanded[0].length > 0) {
+            return expanded[0].map(item => [item.X, item.Y]);
         }
+        return box;
+    }
 
-        // Definir polígono inicial (Rectángulo)
-        const box = [
-            { X: minX, Y: minY },
-            { X: maxX, Y: minY },
-            { X: maxX, Y: maxY },
-            { X: minX, Y: maxY }
-        ];
-
-        // 2. Aplicar Unclip (Expansión) usando Clipper
-        if (this.#config.UNCLIP_RATIO && this.#config.UNCLIP_RATIO > 1.0) {
-            try {
-                // Calcular distancia de expansión
-                const w = (maxX - minX);
-                const h = (maxY - minY);
-                const area = w * h;
-                const perimeter = 2 * (w + h);
-
-                if (perimeter > 0) {
-                    const distance = (area * this.#config.UNCLIP_RATIO) / perimeter;
-
-                    const offset = new Clipper.ClipperOffset();
-                    offset.AddPath(box, Clipper.JoinType.jtRound, Clipper.EndType.etClosedPolygon);
-
-                    const expanded = new Clipper.Paths();
-                    offset.Execute(expanded, distance);
-
-                    if (expanded.length > 0 && expanded[0].length > 0) {
-                        const exPoly = expanded[0];
-
-                        // Convertir de vuelta a min/max rect del polígono expandido
-                        let eMinX = Infinity, eMinY = Infinity;
-                        let eMaxX = -Infinity, eMaxY = -Infinity;
-
-                        for (const pt of exPoly) {
-                            eMinX = Math.min(eMinX, pt.X);
-                            eMinY = Math.min(eMinY, pt.Y);
-                            eMaxX = Math.max(eMaxX, pt.X);
-                            eMaxY = Math.max(eMaxY, pt.Y);
-                        }
-
-                        // Escalar de vuelta coords originales
-                        return [
-                            [Math.floor(eMinX / scale), Math.floor(eMinY / scale)],
-                            [Math.ceil(eMaxX / scale), Math.floor(eMinY / scale)],
-                            [Math.ceil(eMaxX / scale), Math.ceil(eMaxY / scale)],
-                            [Math.floor(eMinX / scale), Math.ceil(eMaxY / scale)]
-                        ];
-                    }
-                }
-            } catch (e) {
-                console.warn("Clipper expansion failed, falling back to manual", e);
-            }
+    #polygonArea(polygon) {
+        let area = 0;
+        for (let i = 0; i < polygon.length; i++) {
+            const j = (i + 1) % polygon.length;
+            area += polygon[i][0] * polygon[j][1] - polygon[j][0] * polygon[i][1];
         }
+        return area / 2.0;
+    }
 
-        // Fallback sin unclip use Clip logic
-        minX = Math.floor(minX / scale);
-        minY = Math.floor(minY / scale);
-        maxX = Math.ceil(maxX / scale);
-        maxY = Math.ceil(maxY / scale);
-
-        return [
-            [minX, minY],
-            [maxX, minY],
-            [maxX, maxY],
-            [minX, maxY]
-        ];
+    #polygonLength(polygon) {
+        let length = 0;
+        for (let i = 0; i < polygon.length; i++) {
+            const j = (i + 1) % polygon.length;
+            length += Math.hypot(polygon[j][0] - polygon[i][0], polygon[j][1] - polygon[i][1]);
+        }
+        return length;
     }
 }
+

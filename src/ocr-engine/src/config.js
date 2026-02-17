@@ -6,21 +6,38 @@
 export const DEFAULT_CONFIG = {
     DETECTION: {
         MODEL_PATH: '/models/det/PP-OCRv5_mobile_det.onnx',
-        THRESHOLD: 0.3,
-        THRESHOLD: 0.3,
-        BOX_THRESHOLD: 0.4, // Lowered to 0.4 to detect more regions (parity tuning)
+
+        // TUNED PARAMETERS (Node.js Benchmark Parity)
+        THRESHOLD: 0.3,       // Sensitivity (Binarization)
+        BOX_THRESHOLD: 0.6,   // Node.js Benchmark Parity (Was 0.3)
         MIN_BOX_SIZE: 3,
         MAX_BOX_SIZE: 2000,
-        UNCLIP_RATIO: 1.85, // Slightly tighter to avoid noise merging
+        UNCLIP_RATIO: 2.0,    // Node.js Benchmark Parity (Was 2.0)
+
         BASE_SIZE: 32,
-        MAX_IMAGE_SIZE: 1536,   // High Def (Multiple of 32). Compromise 1440 vs 1600.
+
+        // Default safe limit (Performance Mode)
+        MAX_IMAGE_SIZE: 1536,
+
+        // Mode Constants (consumed by Worker/App)
+        MODES: {
+            PERFORMANCE: {
+                MAX_IMAGE_SIZE: 1536,
+                RENDER_DPI: 200
+            },
+            HIGH_ACCURACY: {
+                MAX_IMAGE_SIZE: 2176, // Optimized: 2560 -> 2176 (~30% faster, still > 2K)
+                RENDER_DPI: 300
+            }
+        },
+
         ONNX_OPTIONS: {
-            executionProviders: ['webgpu', 'wasm'], // Prioritize WebGPU
+            executionProviders: ['webgpu', 'wasm'],
             graphOptimizationLevel: /** @type {'all'} */ ('all'),
             enableCpuMemArena: true,
             enableMemPattern: true,
-            executionMode: /** @type {'parallel'} */ ('parallel'),
-            logSeverityLevel: /** @type {1} */ (1), // Verbose logging to verify Backend
+            executionMode: /** @type {'sequential'} */ ('sequential'), // Revert to sequential
+            logSeverityLevel: /** @type {3} */ (3),
         }
     },
     RECOGNITION: {
@@ -63,13 +80,13 @@ export const DEFAULT_CONFIG = {
         REMOVE_DUPLICATE_CHARS: true,
         IGNORED_TOKENS: [0],
         ONNX_OPTIONS: {
-            executionProviders: ['wasm'], // Reference: WASM preferred
+            executionProviders: ['webgpu', 'wasm'],
             graphOptimizationLevel: /** @type {'all'} */ ('all'),
-            enableCpuMemArena: true,  // Optimización para CPU
-            enableMemPattern: true,   // Optimización para CPU
-            executionMode: /** @type {'parallel'} */ ('parallel'),
-            logSeverityLevel: /** @type {1} */ (1), // Verbose logging to verify Backend
-            intraOpNumThreads: 0,  // Usar todos los cores disponibles
+            enableCpuMemArena: true,
+            enableMemPattern: true,
+            executionMode: /** @type {'sequential'} */ ('sequential'), // Revert to sequential
+            logSeverityLevel: /** @type {3} */ (3),
+            intraOpNumThreads: 0,
             interOpNumThreads: 0,
         }
     },

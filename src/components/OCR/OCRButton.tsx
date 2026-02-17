@@ -44,6 +44,7 @@ export const OCRButton = ({ onClick, status, progress, disabled }: OCRButtonProp
             {/* Progress was moved to ProgressBar component */}
 
 
+
             <button
                 onClick={onClick}
                 disabled={disabled || status === 'loading' || status === 'processing'}

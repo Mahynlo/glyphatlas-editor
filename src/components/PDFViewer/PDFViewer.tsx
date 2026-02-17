@@ -13,18 +13,21 @@ import { OCRTextLayer } from '../OCR/OCRTextLayer';
 interface PDFViewerProps {
     file: File | null;
     onPageRendered?: (pageIndex: number, scale: number, viewport: any) => void;
-    ocrResults?: any; // Start with any, define type later
+    ocrResults?: any;
+    redactions?: { [page: number]: any[] }; // [NEW]
+    onRemoveRedaction?: (pageIndex: number, boxIndex: number) => void; // [NEW]
     isOcrProcessing?: boolean;
     ocrProgress?: { current: number; total: number; status: string };
     onOcrTrigger?: () => void;
+    showOverlay?: boolean; // [NEW]
 }
 
-// Unused props removed to satisfy linter
-export const PDFViewer = ({ file, ocrResults }: PDFViewerProps) => {
+export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, showOverlay = true }: PDFViewerProps) => {
     const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [pages, setPages] = useState<any[]>([]);
     const containerRef = useRef<HTMLDivElement>(null);
 
+    // ... (useEffect loadPdf same as before)
     useEffect(() => {
         if (!file) return;
 
@@ -46,6 +49,7 @@ export const PDFViewer = ({ file, ocrResults }: PDFViewerProps) => {
         loadPdf();
     }, [file]);
 
+
     return (
         <div className="pdf-viewer-container" ref={containerRef} style={{
             height: '80vh',
@@ -64,6 +68,9 @@ export const PDFViewer = ({ file, ocrResults }: PDFViewerProps) => {
                             pageNumber={pageNum}
                             pdfDoc={pdfDoc}
                             ocrResult={ocrResults?.[pageNum - 1]}
+                            redactedBoxes={redactions?.[pageNum - 1] || []} // Pass page redactions
+                            onRemoveBox={(boxIdx) => onRemoveRedaction?.(pageNum - 1, boxIdx)} // Pass Handler
+                            showOverlay={showOverlay} // [NEW] Pass down
                         />
                     ))}
                 </div>
@@ -72,12 +79,19 @@ export const PDFViewer = ({ file, ocrResults }: PDFViewerProps) => {
     );
 };
 
-const PDFPage = ({ pageNumber, pdfDoc, ocrResult }: { pageNumber: number, pdfDoc: pdfjsLib.PDFDocumentProxy, ocrResult: any }) => {
+const PDFPage = ({ pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox, showOverlay }: { // [NEW]
+    pageNumber: number,
+    pdfDoc: pdfjsLib.PDFDocumentProxy,
+    ocrResult: any,
+    redactedBoxes: any[],
+    onRemoveBox?: (index: number) => void,
+    showOverlay?: boolean // [NEW]
+}) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const textLayerRef = useRef<HTMLDivElement>(null);
     const wrapperRef = useRef<HTMLDivElement>(null);
-    const renderTaskRef = useRef<any>(null); // internal render task tracking
-    const [scale] = useState(1.5); // Fixed scale for now
+    const renderTaskRef = useRef<any>(null);
+    const [scale] = useState(1.5);
     const [viewport, setViewport] = useState<any>(null);
 
     useEffect(() => {
@@ -93,7 +107,6 @@ const PDFPage = ({ pageNumber, pdfDoc, ocrResult }: { pageNumber: number, pdfDoc
                 const context = canvas?.getContext('2d');
 
                 if (canvas && context) {
-                    // Reset canvas to ensure clean state
                     canvas.height = newViewport.height;
                     canvas.width = newViewport.width;
 
@@ -103,7 +116,6 @@ const PDFPage = ({ pageNumber, pdfDoc, ocrResult }: { pageNumber: number, pdfDoc
                         canvas: canvas,
                     };
 
-                    // Cancel previous render if any
                     if (renderTaskRef.current) {
                         try {
                             renderTaskRef.current.cancel();
@@ -135,6 +147,7 @@ const PDFPage = ({ pageNumber, pdfDoc, ocrResult }: { pageNumber: number, pdfDoc
     return (
         <div ref={wrapperRef} className="pdf-page" style={{ position: 'relative', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}>
             <canvas key={`${pageNumber}-${scale}`} ref={canvasRef} />
+
             {/* Native Text Layer */}
             <div
                 ref={textLayerRef}
@@ -151,16 +164,53 @@ const PDFPage = ({ pageNumber, pdfDoc, ocrResult }: { pageNumber: number, pdfDoc
                 } as any}
             />
 
-            {/* OCR Overlay - The "Text Layer Strategy" */}
+            {/* OCR Overlay */}
             {ocrResult && viewport && (
                 <OCRTextLayer
                     results={ocrResult.results}
                     width={viewport.width}
                     height={viewport.height}
                     nativeTextLayerRef={textLayerRef}
-                    showDebug={true}
+                    showDebug={showOverlay}
                     stats={ocrResult.stats}
                 />
+            )}
+
+            {/* Redaction Layer */}
+            {redactedBoxes && redactedBoxes.length > 0 && viewport && (
+                <div className="redaction-layer" style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    // pointerEvents: 'none', // Removed global disable so children can be clicked
+                    width: '100%',
+                    height: '100%',
+                    zIndex: 50 // On top of text
+                }}>
+                    {redactedBoxes.map((box, idx) => (
+                        <div
+                            key={idx}
+                            onClick={(e) => {
+                                e.stopPropagation(); // Prevent other clicks
+                                if (confirm('Remove this redaction?')) {
+                                    onRemoveBox?.(idx);
+                                }
+                            }}
+                            title="Click to remove redaction"
+                            style={{
+                                position: 'absolute',
+                                left: `${box[0] * 100}%`,
+                                top: `${box[1] * 100}%`,
+                                width: `${(box[2]) * 100}%`,
+                                height: `${(box[3]) * 100}%`,
+                                background: 'black',
+                                opacity: 1,
+                                cursor: 'pointer', // Suggest interaction
+                                pointerEvents: 'auto' // Re-enable clicks
+                            }}
+                        />
+                    ))}
+                </div>
             )}
         </div>
     );

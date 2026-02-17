@@ -14,27 +14,62 @@ export class ImageProcessor {
      * @param {number} targetWidth - Ancho objetivo
      * @returns {Object} Tensor data y dimensiones
      */
+    /**
+     * Cache shared canvases to avoid reallocation overhead (116+ regions = 232+ canvases avoided)
+     */
+    static #sharedCanvas = null;
+    static #sharedCtx = null;
+    static #sharedTempCanvas = null;
+    static #sharedTempCtx = null;
+
+    static getSharedCanvas(width, height) {
+        if (!this.#sharedCanvas) {
+            this.#sharedCanvas = new OffscreenCanvas(width, height);
+            this.#sharedCtx = this.#sharedCanvas.getContext('2d', { willReadFrequently: true });
+        } else {
+            // Resize if needed (or just keep max size? Resizing is cheap enough for Offscreen)
+            if (this.#sharedCanvas.width !== width || this.#sharedCanvas.height !== height) {
+                this.#sharedCanvas.width = width;
+                this.#sharedCanvas.height = height;
+            }
+        }
+        return { canvas: this.#sharedCanvas, ctx: this.#sharedCtx };
+    }
+
+    static getSharedTempCanvas(width, height) {
+        if (!this.#sharedTempCanvas) {
+            this.#sharedTempCanvas = new OffscreenCanvas(width, height);
+            this.#sharedTempCtx = this.#sharedTempCanvas.getContext('2d', { willReadFrequently: true });
+        } else {
+            if (this.#sharedTempCanvas.width !== width || this.#sharedTempCanvas.height !== height) {
+                this.#sharedTempCanvas.width = width;
+                this.#sharedTempCanvas.height = height;
+            }
+        }
+        return { canvas: this.#sharedTempCanvas, ctx: this.#sharedTempCtx };
+    }
+
+    /**
+     * Convierte ImageData a tensor normalizado para ONNX
+     * @param {ImageData} imageData - Datos de imagen del canvas
+     * @param {number} targetHeight - Altura objetivo
+     * @param {number} targetWidth - Ancho objetivo
+     * @returns {Object} Tensor data y dimensiones
+     */
     static imageDataToTensor(imageData, targetHeight = 48, targetWidth = null) {
         // Variable Width Mode (Match Node.js behavior)
-        // If targetWidth is not provided, we scale by height and keep aspect ratio.
-
         let scaledWidth, scaledHeight;
         let finalWidth, finalHeight;
         let scale;
 
         if (!targetWidth) {
-            // Variable Width Logic (Node Parity)
             scale = targetHeight / imageData.height;
             scaledWidth = Math.ceil(imageData.width * scale);
             scaledHeight = targetHeight;
-
-            finalWidth = scaledWidth; // No padding
+            finalWidth = scaledWidth;
             finalHeight = targetHeight;
-
-            // Limit width to avoid memory issues (e.g. 2000px)
             if (finalWidth > 2048) finalWidth = 2048;
         } else {
-            // Fixed Width Logic (e.g. 320px with padding)
             finalWidth = targetWidth;
             finalHeight = targetHeight;
             scale = Math.min(targetWidth / imageData.width, targetHeight / imageData.height);
@@ -42,18 +77,13 @@ export class ImageProcessor {
             scaledHeight = Math.floor(imageData.height * scale);
         }
 
-        // Crear canvas temporal para redimensionar (Worker compatible)
-        const canvas = new OffscreenCanvas(finalWidth, finalHeight);
-        const ctx = canvas.getContext('2d');
+        // OPTIMIZATION: Use Shared Canvas
+        const { canvas, ctx } = this.getSharedCanvas(finalWidth, finalHeight);
 
-        // Crear ImageData temporal
-        const tempCanvas = new OffscreenCanvas(imageData.width, imageData.height);
-        const tempCtx = tempCanvas.getContext('2d');
+        // Temp Canvas for original image drawing
+        const { canvas: tempCanvas, ctx: tempCtx } = this.getSharedTempCanvas(imageData.width, imageData.height);
         tempCtx.putImageData(imageData, 0, 0);
 
-        // Center or Left Align?
-        // Node "resize" with 'contain' centers it if width is fixed.
-        // But if width is variable (our case), offset is 0.
         const offsetX = Math.floor((finalWidth - scaledWidth) / 2);
         const offsetY = Math.floor((finalHeight - scaledHeight) / 2);
 
@@ -80,11 +110,11 @@ export class ImageProcessor {
             const normG = (g - 0.5) / 0.5;
             const normB = (b - 0.5) / 0.5;
 
-            // RGB Order (Standard for ONNX Runtime / Web)
-            // Was BGR, which is correct for OpenCV but often not for ONNX Web
-            float32Data[i] = normR;
+            // BGR Order (Node Parity / OpenCV Standard)
+            // Channel 0 = B, Channel 1 = G, Channel 2 = R
+            float32Data[i] = normB;
             float32Data[targetHeight * targetWidth + i] = normG;
-            float32Data[2 * targetHeight * targetWidth + i] = normB;
+            float32Data[2 * targetHeight * targetWidth + i] = normR;
         }
 
         return {

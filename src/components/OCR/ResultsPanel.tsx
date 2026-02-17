@@ -10,9 +10,12 @@ interface ResultsPanelProps {
     results: OCRResult[];
     isOpen: boolean;
     onClose: () => void;
+    onRedact: (term: string) => void; // New Prop
 }
 
-export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onClose }) => {
+export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onClose, onRedact }) => {
+    const [searchTerm, setSearchTerm] = React.useState("");
+
     if (!isOpen) return null;
 
     // Helper to extract full text from a page result
@@ -35,6 +38,12 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onC
         // Could show toast here
     };
 
+    const handleRedactClick = () => {
+        if (searchTerm.trim()) {
+            onRedact(searchTerm);
+        }
+    };
+
     return (
         <div className="results-panel" style={{
             width: '350px',
@@ -50,18 +59,52 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onC
                 padding: '16px',
                 borderBottom: '1px solid #e2e8f0',
                 display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
+                flexDirection: 'column',
+                gap: '10px',
                 background: '#f8fafc'
             }}>
-                <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#2d3748', margin: 0 }}>Extracted Text</h2>
-                <button onClick={onClose} style={{
-                    background: 'none',
-                    border: 'none',
-                    fontSize: '20px',
-                    color: '#a0aec0',
-                    cursor: 'pointer'
-                }}>&times;</button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#2d3748', margin: 0 }}>Extracted Text</h2>
+                    <button onClick={onClose} style={{
+                        background: 'none',
+                        border: 'none',
+                        fontSize: '20px',
+                        color: '#a0aec0',
+                        cursor: 'pointer'
+                    }}>&times;</button>
+                </div>
+
+                {/* Search & Redact UI */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                        type="text"
+                        placeholder="Search to censor..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        style={{
+                            flex: 1,
+                            padding: '6px 10px',
+                            border: '1px solid #cbd5e0',
+                            borderRadius: '4px',
+                            fontSize: '13px'
+                        }}
+                    />
+                    <button
+                        onClick={handleRedactClick}
+                        disabled={!searchTerm.trim()}
+                        style={{
+                            background: '#e53e3e',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '6px 12px',
+                            fontSize: '12px',
+                            cursor: searchTerm.trim() ? 'pointer' : 'not-allowed',
+                            opacity: searchTerm.trim() ? 1 : 0.6
+                        }}>
+                        Redact
+                    </button>
+                </div>
             </div>
 
             <div className="panel-content" style={{

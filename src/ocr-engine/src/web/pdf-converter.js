@@ -92,6 +92,186 @@ export class PdfConverter {
     }
 
     /**
+     * Extrae texto estructurado y ubicación de bloques de imagen (Nativo)
+     * @param {number} pageIndex 
+     * @returns {Object} { textBlocks: Array, imageBlocks: Array, hasHiddenText: boolean }
+     */
+    getStructuredText(pageIndex) {
+        if (!this.#doc) throw new Error("No document loaded");
+
+        let page;
+        try {
+            page = this.#doc.loadPage(pageIndex);
+
+            // Try to get structured text
+            const stext = page.toStructuredText("preserve-whitespace");
+            const bounds = page.getBounds();
+            const pageWidth = bounds[2] - bounds[0];
+            const pageHeight = bounds[3] - bounds[1];
+
+            // MuPDF JS often exposes: stext.asJSON()
+            // This is the safest way to get data out of WASM heap into JS object
+            let data = null;
+            if (stext.asJSON) {
+                const jsonStr = stext.asJSON();
+                data = JSON.parse(jsonStr);
+            } else {
+                // Fallback: manually walker if API exists, else abort
+                console.warn("[PdfConverter] stext.asJSON() not available. Hybrid mode limited.");
+
+                // Cleanup
+                page.destroy();
+                return { textBlocks: [], imageBlocks: [], hasHiddenText: false };
+            }
+
+            // Parse JSON Data
+            // Structure typically: { blocks: [ { type: "text", lines: [...] }, { type: "image", bbox: [...] } ] }
+            const textBlocks = [];
+            const imageBlocks = [];
+            let hasHiddenText = false;
+
+            if (data && data.blocks) {
+                // DEBUG: Log block types to see what MuPDF is returning
+                const types = data.blocks.map(b => b.type);
+                const uniqueTypes = [...new Set(types)];
+                console.log(`[PdfConverter] Block Types Found: ${uniqueTypes.join(', ')}`);
+
+                for (const block of data.blocks) {
+                    if (block.type === 'image') {
+                        // MuPDF JSON gives bbox as object {x, y, w, h} (Points)
+                        const b = block.bbox;
+                        imageBlocks.push({
+                            box: [
+                                b.x / pageWidth,
+                                b.y / pageHeight,
+                                b.w / pageWidth,
+                                b.h / pageHeight
+                            ]
+                        });
+                    } else if (block.type === 'text') {
+                        textBlocks.push(block);
+                    }
+                }
+            }
+
+            // FALLBACK: If stext found no images, try page.getImages() (if available)
+            if (imageBlocks.length === 0 && page.getImages) {
+                try {
+                    const images = page.getImages(); // Expects array of {x,y,w,h, ...}
+                    if (images && images.length > 0) {
+                        console.log(`[PdfConverter] page.getImages() found ${images.length} images.`);
+                        for (const img of images) {
+                            // Verify structure. Usually {x, y, w, h, transform: [a,b,c,d,e,f]}
+                            // If it has x,y,w,h directly:
+                            if (img.w > 0 && img.h > 0) {
+                                // MuPDF getDrawings/getImages usually return Points
+                                imageBlocks.push({
+                                    box: [
+                                        img.x / pageWidth,
+                                        img.y / pageHeight,
+                                        img.w / pageWidth,
+                                        img.h / pageHeight
+                                    ]
+                                });
+                            } else if (img.bbox) {
+                                // Sometimes it's inside bbox property
+                                const b = img.bbox;
+                                imageBlocks.push({
+                                    box: [
+                                        b.x / pageWidth,
+                                        b.y / pageHeight,
+                                        b.w / pageWidth,
+                                        b.h / pageHeight
+                                    ]
+                                });
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.warn("[PdfConverter] page.getImages() failed or not supported:", err);
+                }
+            }
+
+            page.destroy();
+            return { textBlocks, imageBlocks, hasHiddenText };
+
+        } catch (e) {
+            console.error("[PdfConverter] Structured extraction failed:", e);
+            if (page) page.destroy();
+            return { textBlocks: [], imageBlocks: [], hasHiddenText: false };
+        }
+    }
+
+    /**
+     * Renderiza un recorte de página para OCR de imagen
+     */
+    renderCrop(pageIndex, normBox, dpi = 200) {
+        if (!this.#doc) throw new Error("No document loaded");
+        const page = this.#doc.loadPage(pageIndex);
+
+        const bounds = page.getBounds();
+        const pageWidth = bounds[2] - bounds[0];
+        const pageHeight = bounds[3] - bounds[1];
+
+        // Convert Normalized to Points
+        const x = normBox[0] * pageWidth;
+        const y = normBox[1] * pageHeight;
+        const w = normBox[2] * pageWidth;
+        const h = normBox[3] * pageHeight;
+
+        // Scale
+        const scale = dpi / 72;
+        const matrix = mupdf.Matrix.scale(scale, scale);
+        // Translate source to origin? No, render full page translated
+        matrix.translate(-x * scale, -y * scale);
+        // Wait, order matters: scale then translate? or translate then scale?
+        // We want (x,y) to become (0,0).
+        // If we translate (-x, -y) first, then scale:  (p - off) * s.
+        // MuPDF matrix: concat.
+        // Let's use simple logic:
+        // Render Full Page -> Crop Canvas. It's safe.
+        // Matrix clipping is hard to get right without trial/error.
+
+        // FALLBACK STRATEGY: Render Full, Crop JS.
+        // Since we are in worker, we can do this efficiently?
+        // Actually, rendering full page for every small image is slow.
+
+        // Let's try correct Matrix:
+        // Identity -> Translate(-x, -y) -> Scale(s, s).
+        const m = mupdf.Matrix.identity();
+        m.translate(-x, -y);
+        m.scale(scale, scale);
+
+        // Output size
+        const targetW = Math.ceil(w * scale);
+        const targetH = Math.ceil(h * scale);
+
+        // Render
+        const pixmap = page.toPixmap(m, mupdf.ColorSpace.DeviceRGB, false);
+        // Note: this might render blank if clipping not set?
+        // MuPDF 1.2+ usually handles infinite canvas.
+
+        const width = pixmap.getWidth();
+        const height = pixmap.getHeight();
+        const samples = pixmap.getPixels();
+
+        // Create ImageData
+        // Note: we might need to manually crop samples if it rendered more?
+        // But usually pixmap honors the "valid" region.
+
+        const rgba = new Uint8ClampedArray(width * height * 4);
+        for (let i = 0; i < width * height; i++) {
+            rgba[i * 4] = samples[i * 3];
+            rgba[i * 4 + 1] = samples[i * 3 + 1];
+            rgba[i * 4 + 2] = samples[i * 3 + 2];
+            rgba[i * 4 + 3] = 255;
+        }
+
+        page.destroy();
+        return new ImageData(rgba, width, height);
+    }
+
+    /**
      * Free resources
      */
     destroy() {
