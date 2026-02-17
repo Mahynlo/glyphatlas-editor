@@ -1,6 +1,6 @@
 
 import { Command } from '@tauri-apps/plugin-shell';
-import { writeFile, BaseDirectory } from '@tauri-apps/plugin-fs';
+import { writeFile } from '@tauri-apps/plugin-fs';
 import { tempDir, join } from '@tauri-apps/api/path';
 
 // RUTA ABSOLUTA al script CLI (Ajustar si cambia la ubicación del proyecto)

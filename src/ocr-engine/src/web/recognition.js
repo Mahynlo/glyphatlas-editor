@@ -80,9 +80,8 @@ export class Recognition {
 
             dictionary = ['blank', ...chars, ' '];
 
-            console.log(`[Web Recognition] DEBUG - config keys:`, Object.keys(config));
-            console.log(`[Web Recognition] DEBUG - PostProcess keys:`, config.PostProcess ? Object.keys(config.PostProcess) : 'no PostProcess');
-            console.log(`[Web Recognition] DEBUG - chars length:`, chars.length);
+            dictionary = ['blank', ...chars, ' '];
+
         } else {
             const text = await FileLoader.loadText(dictPath);
             dictionary = ['blank', ...text.trim().split('\n'), ' '];
@@ -121,21 +120,16 @@ export class Recognition {
         const H = 48; // Fixed Height
         const results = [];
 
-        // 1. Run Inference Sequentially (Safe Mode)
-        // Maintain Variable Width logic (Node Parity) but avoid Promise.all concurrency
-        // which might be unstable with onnxruntime-web in some contexts.
-
         try {
+            // Revert: Sequential Execution to prevent WebGPU Hangs
             for (const img of imageDatas) {
-                // Resize to Height 48, Variable Width (targetWidth=null)
-                // utils.js now handles targetWidth=null correctly returning [1, 3, 48, W]
+                // Use Shared Canvas (Optimized)
+                // Resize to Height 48, Variable Width
                 const { data, dims } = ImageProcessor.imageDataToTensor(img, H, null);
 
                 const tensor = new ort.Tensor('float32', data, dims);
 
                 // Run inference
-                // WebGPU processing is async. Awaiting here ensures the GPU executes this Op
-                // before starting the next one, preventing TDR or OOM on heavy batches.
                 const outputs = await this.#session.run({ x: tensor });
 
                 // Post-process
@@ -150,7 +144,7 @@ export class Recognition {
             return results.map(r => ({ ...r, inferenceTime: timePerItem }));
 
         } catch (e) {
-            console.error("Variable Width Execution Error:", e);
+            console.error("Batch Execution Error:", e);
             throw e;
         }
     }

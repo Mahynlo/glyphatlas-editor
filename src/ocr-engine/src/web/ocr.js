@@ -44,13 +44,110 @@ export class Ocr {
         const startTotal = performance.now();
 
         // 1. Detection
-        const { boxes, inferenceTime: detTime } = await this.#detection.detect(imageData);
+        const { boxes, inferenceTime: detTime } = await this.#detection.detect(imageData, options);
         stats.detectionTime = detTime;
 
         if (boxes.length === 0) {
             return { results: [], stats };
         }
 
+        // 2. Recognition
+        return this.#runRecognition(imageData, boxes, stats, startTotal, options);
+    }
+
+    /**
+     * Hybrid Execution: Detects text, filters out regions already covered by Native Text,
+     * and recognizes the rest.
+     * @param {ImageData} imageData 
+     * @param {Array} nativeRects - Array of [x, y, w, h] in PIXELS
+     * @param {Object} options 
+     */
+    async executeHybrid(imageData, nativeRects, options = {}) {
+        const stats = {
+            detectionTime: 0,
+            recognitionTime: 0,
+            totalTime: 0,
+            wordsFound: 0,
+            averageConfidence: 0
+        };
+        const startTotal = performance.now();
+
+        // 1. Detection
+        const { boxes, inferenceTime: detTime } = await this.#detection.detect(imageData, options);
+        stats.detectionTime = detTime;
+
+        if (boxes.length === 0) {
+            return { results: [], stats };
+        }
+
+        // 2. Filter Boxes
+        // boxes are [[x,y]...] in Pixels.
+        // nativeRects are [x,y,w,h] in Pixels.
+
+        const filteredBoxes = boxes.filter(box => {
+            // Convert Box Quad to Rect [x,y,w,h] (Pixels)
+            const xs = box.map(p => p[0]);
+            const ys = box.map(p => p[1]);
+            const xMin = Math.min(...xs);
+            const yMin = Math.min(...ys);
+            const xMax = Math.max(...xs);
+            const yMax = Math.max(...ys);
+
+            // Allow some padding?
+            const detRect = { x: xMin, y: yMin, w: xMax - xMin, h: yMax - yMin };
+
+            // Check against ALL native boxes
+            // Native boxes are prioritized. If we overlap significantly, we assume it's native.
+            // But be careful: Detection might find a word inside a paragraph.
+            // Native boxes are usually lines or blocks.
+
+            for (const natRectArr of nativeRects) {
+                // natRectArr is [x, y, w, h] Pixels
+                const natRect = {
+                    x: natRectArr[0],
+                    y: natRectArr[1],
+                    w: natRectArr[2],
+                    h: natRectArr[3]
+                };
+
+                if (this.#checkOverlap(detRect, natRect)) {
+                    return false; // Exclude (it is native)
+                }
+            }
+            return true; // Keep (it is image text)
+        });
+
+        // 3. Recognition on Remaining
+        if (filteredBoxes.length === 0) {
+            stats.totalTime = performance.now() - startTotal;
+            return { results: [], stats };
+        }
+
+        console.log(`[OCR Hybrid] Filtered: Kept ${filteredBoxes.length} / ${boxes.length} boxes (Native overlap removed)`);
+
+        return this.#runRecognition(imageData, filteredBoxes, stats, startTotal, options);
+    }
+
+    #checkOverlap(rect1, rect2) {
+        // Intersection
+        const x_left = Math.max(rect1.x, rect2.x);
+        const y_top = Math.max(rect1.y, rect2.y);
+        const x_right = Math.min(rect1.x + rect1.w, rect2.x + rect2.w);
+        const y_bottom = Math.min(rect1.y + rect1.h, rect2.y + rect2.h); // coords are top-left based? Yes.
+
+        if (x_right < x_left || y_bottom < y_top) {
+            return false; // No intersection
+        }
+
+        const intersectionArea = (x_right - x_left) * (y_bottom - y_top);
+        const area1 = rect1.w * rect1.h;
+        // const area2 = rect2.w * rect2.h;
+
+        // If Intersection covers > 50% of the Detected Box (rect1), assume it's the same content.
+        return (intersectionArea / area1) > 0.5;
+    }
+
+    async #runRecognition(imageData, boxes, stats, startTotal, options) {
         // 2. Sort Boxes (Y-major, then X)
         const sortedBoxes = this.#sortBoxes(boxes);
 
@@ -64,6 +161,7 @@ export class Ocr {
         let totalConf = 0;
 
         // Batch Inference for stability
+        // Reverted to 4 due to Parallel stability issues
         const BATCH_SIZE = 4;
         const queue = [...sortedBoxes];
 
@@ -114,7 +212,7 @@ export class Ocr {
                             });
                             totalConf += res.confidence;
                         } else {
-                            console.warn(`[OCR] Low confidence/Empty: "${res.text}" (${res.confidence.toFixed(2)}) - Threshold: ${options.confidenceThreshold || 0.5}`);
+                            // console.warn(`[OCR] Low confidence/Empty: "${res.text}" (${res.confidence.toFixed(2)}) - Threshold: ${options.confidenceThreshold || 0.5}`);
                         }
                     }
                 } catch (e) {

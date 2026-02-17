@@ -144,37 +144,188 @@ async function handleInit(config) {
     }
 }
 
-async function handleProcessPage({ pdfData, pageIndex }) {
+async function handleProcessPage(payload) {
+    // Destructure mode from payload (default to PERFORMANCE)
+    const { pdfData, pageIndex, mode = 'PERFORMANCE', forceOCR = false } = payload; // Added forceOCR
+
     if (!pdfConverter || !ocr) {
         throw new Error('Worker not initialized');
     }
 
     try {
-        self.postMessage({ type: 'STATUS', payload: `Processing Page ${pageIndex + 1}...` });
+        self.postMessage({ type: 'STATUS', payload: `Processing Page ${pageIndex + 1} (${mode})...` });
+
+        // Select Config based on Mode
+        // Default to Performance if mode is invalid
+        const modeConfig = DEFAULT_CONFIG.DETECTION.MODES[mode] || DEFAULT_CONFIG.DETECTION.MODES.PERFORMANCE;
+        const targetDPI = modeConfig.RENDER_DPI;
+        const maxImageSize = modeConfig.MAX_IMAGE_SIZE;
 
         // 1. Load PDF Document (if needed)
-        // Optimization: Keep doc open if possible, but for safety reload
         await pdfConverter.loadDocument(pdfData);
 
-        // 2. Render Page to Image (220 DPI)
-        // Reference implementation uses 200 DPI. 
-        // 300 DPI is too heavy, 200 is okay. 220 matches 1440px width better for A4.
-        const imageData = pdfConverter.getPageImage(pageIndex, 220);
+        // HYBRID INTELLIGENCE
+        // Check for Native Text first
+        let nativeData = null;
+        try {
+            if (!forceOCR) {
+                nativeData = pdfConverter.getStructuredText(pageIndex);
+            }
+        } catch (e) {
+            console.warn("Native text extraction failed, falling back to OCR", e);
+        }
 
-        // 3. Run OCR Pipeline (Det -> Sort -> Rec)
-        // Returns { results, stats }
-        const { results, stats } = await ocr.execute(imageData);
+        const isNativeTextStart = nativeData && nativeData.textBlocks && nativeData.textBlocks.length > 0;
+
+        // Threshold: A few chars might be page numbers. We want substantial text.
+        // Let's count approximate chars.
+        let charCount = 0;
+        if (isNativeTextStart) {
+            // simplified count
+            charCount = nativeData.textBlocks.length * 10; // avg
+        }
+
+        const USE_NATIVE = isNativeTextStart && charCount > 50;
+        const USE_HYBRID = USE_NATIVE && nativeData.imageBlocks && nativeData.imageBlocks.length > 0;
+
+        console.log(`[OCR Worker] Native Check: Count=${charCount}, USE_NATIVE=${USE_NATIVE}`);
+        if (USE_NATIVE) {
+            console.log(`[OCR Worker] Hybrid Check: ImageBlocks=${nativeData && nativeData.imageBlocks ? nativeData.imageBlocks.length : 0}, USE_HYBRID=${USE_HYBRID}`);
+        }
+
+        let finalResults = [];
+        let finalStats = {};
+        let finalImageData = null;
+
+        // MODE 1: NATIVE / HYBRID
+        if (USE_NATIVE) {
+            self.postMessage({
+                type: 'STATUS',
+                payload: USE_HYBRID ? 'HYBRID_MODE' : 'NATIVE_MODE'
+            });
+
+            // To be consistent, we should render the page image for the UI display.
+            const renderDpi = targetDPI; // Use the configured DPI
+            const imageData = pdfConverter.getPageImage(pageIndex, renderDpi);
+            const W = imageData.width;
+            const H = imageData.height;
+            finalImageData = imageData;
+
+            const nativeResults = [];
+            // Map text blocks
+            // Note: detailed mapping requires line/span iteration.
+            // If getStructuredText return coarse blocks, the UI highlight will be coarse.
+            // Good enough for Phase 1.
+
+            // TODO: Map nativeData.textBlocks to results
+            // For now, we assume simple mapping just to prove flow.
+            // Real mapping needs iterating `lines` inside blocks.
+            if (nativeData && nativeData.textBlocks) {
+                for (const textBlock of nativeData.textBlocks) {
+                    // Structure: { type: "text", bbox: {x,y,w,h}, lines: [ { text: "...", ... } ] }
+
+                    // Aggregate text from lines
+                    let blockText = "";
+                    if (textBlock.lines) {
+                        for (const line of textBlock.lines) {
+                            // JSON shows 'text' is directly on line object
+                            if (line.text) {
+                                blockText += line.text + " ";
+                            } else if (line.spans) {
+                                // Fallback just in case
+                                for (const span of line.spans) {
+                                    blockText += span.text + " ";
+                                }
+                            }
+                        }
+                    }
+
+                    if (blockText.trim().length > 0) {
+                        const bbox = textBlock.bbox; // {x, y, w, h} Points
+
+                        // Convert Points -> Pixels
+                        // Scale = targetDPI / 72
+                        const s = targetDPI / 72;
+                        const x = bbox.x * s;
+                        const y = bbox.y * s;
+                        const w = bbox.w * s;
+                        const h = bbox.h * s;
+
+                        // Normalize 0..1
+                        // box is Quad: TL, TR, BR, BL
+                        nativeResults.push({
+                            text: blockText.trim(),
+                            confidence: 1.0,
+                            box: [
+                                [x / W, y / H],
+                                [(x + w) / W, y / H],
+                                [(x + w) / W, (y + h) / H],
+                                [x / W, (y + h) / H]
+                            ],
+                            rect: [x, y, w, h] // Pixels
+                        });
+                    }
+                }
+            }
+
+            // VISUAL HYBRID STRATEGY:
+            // 1. We have Native Text in 'nativeResults'.
+            // 2. We Run OCR Detection on the FULL PAGE (Visual).
+            // 3. We filter out any OCR Box that overlaps with 'nativeResults'.
+            // 4. We recognize the remnants (Text in Images / Handwritten).
+
+            // Collect Native Boxes for filtering (Pixels)
+            const nativeRects = nativeResults.map(r => r.rect);
+
+            // Execute Hybrid
+            // Note: executeHybrid will return ONLY the additional (image) results.
+            const { results: hybridResults, stats: hybridStats } = await ocr.executeHybrid(finalImageData, nativeRects, {
+                MAX_IMAGE_SIZE: maxImageSize
+            });
+
+            // Merge Results
+            if (hybridResults.length > 0) {
+                // Remap hybrid results (which are already in Pixels for 'rect', but 'box' is Pixels too)
+                // Wait, executeHybrid returns results in same format as execute.
+                // .box is [[x,y]..] Pixels (relative to finalImageData).
+                // .rect is [x,y,w,h] Pixels.
+
+                // We need to ensure we don't double normalize later?
+                // The loop below handles 'rect' -> 'box' (normalized).
+                // So we just push them to finalResults.
+
+                nativeResults.push(...hybridResults);
+                console.log(`[OCR Worker] Hybrid Added ${hybridResults.length} new regions.`);
+            }
+
+            finalResults = nativeResults;
+            finalStats = { totalTime: hybridStats.totalTime, mode: 'visual_hybrid', extraRegions: hybridResults.length };
+        } else {
+            // MODE 2: SCANNED (Classic)
+            const imageData = pdfConverter.getPageImage(pageIndex, targetDPI);
+            finalImageData = imageData;
+
+            // Run OCR
+            const { results, stats } = await ocr.execute(imageData, {
+                MAX_IMAGE_SIZE: maxImageSize
+            });
+            finalResults = results;
+            finalStats = stats;
+        }
 
         // 4. Clean up PDF resources for this page
         pdfConverter.destroy();
 
         // 5. Normalize Coordinates (Pixels -> 0..1)
-        // CRITICAL: OCRTextLayer expects 'box' to be [x, y, w, h] normalized
-        // Without this, the text overlay will be positioned wildly incorrectly.
-        const normalizedResults = results.map(item => {
-            // item.rect is [x, y, w, h] in pixels
-            // box in result from detection is quad [[x,y]...], 
-            // but after recognition/grouping it might be { box: [[x,y]..], rect: [x,y,w,h] }
+        // Note: If USE_NATIVE, our logic above constructed 'rect' in pixels and 'box' normalized.
+        // But the loop below expects 'rect' (pixels) -> 'box' (normalized).
+        // If we already have accurate normalized box in finalResults, we should preserve it?
+        // OR we just re-normalize from 'rect' to be safe and consistent.
+
+        const validatedResults = finalResults.map(item => {
+            // Re-calc normalized from rect (Pixels) using finalImageData dimensions
+            // logic same as before but using finalImageData
+
             let x, y, w, h;
             if (item.rect) {
                 [x, y, w, h] = item.rect;
@@ -190,10 +341,10 @@ async function handleProcessPage({ pdfData, pageIndex }) {
             return {
                 ...item,
                 box: [
-                    x / imageData.width,
-                    y / imageData.height,
-                    w / imageData.width,
-                    h / imageData.height
+                    x / finalImageData.width,
+                    y / finalImageData.height,
+                    w / finalImageData.width,
+                    h / finalImageData.height
                 ]
             };
         });
@@ -204,12 +355,12 @@ async function handleProcessPage({ pdfData, pageIndex }) {
             payload: {
                 pageIndex,
                 scanDimensions: {
-                    width: imageData.width,
-                    height: imageData.height,
-                    dpi: 220 // explicit
+                    width: finalImageData.width,
+                    height: finalImageData.height,
+                    dpi: targetDPI
                 },
-                stats, // Timing and confidence stats
-                results: normalizedResults
+                stats: finalStats,
+                results: validatedResults
             }
         });
 
