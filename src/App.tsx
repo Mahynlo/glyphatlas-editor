@@ -6,6 +6,11 @@ import { ProgressBar } from "./components/OCR/ProgressBar";
 import { ResultsPanel } from "./components/OCR/ResultsPanel";
 import { ThumbnailSidebar } from "./components/PDFViewer/ThumbnailSidebar";
 import OCRWorker from './workers/ocr.worker.js?worker';
+// Native OCR — Main Thread only (Tauri invoke requires window context)
+import { OCR_ENGINE } from './ocr-engine/src/config.js';
+import { nativeOcrPage } from './ocr-engine/src/web/native-ocr-bridge.js';
+// Tauri dialog — the only reliable way to get the filesystem path in Tauri v2
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 interface OCRProgress {
     current: number;
@@ -15,7 +20,12 @@ interface OCRProgress {
 
 function App() {
     const [file, setFile] = useState<File | null>(null);
-    const [workerStatus, setWorkerStatus] = useState<'initializing' | 'ready' | 'error'>('initializing');
+    // Absolute path on disk — used by the native OCR engine (Rust reads the file directly)
+    const [filePath, setFilePath] = useState<string | null>(null);
+    // When using the native engine the worker is never created, so start as 'ready'
+    const [workerStatus, setWorkerStatus] = useState<'initializing' | 'ready' | 'error'>(
+        OCR_ENGINE === 'native' ? 'ready' : 'initializing'
+    );
     const [ocrStatus, setOcrStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
     const [ocrProgress, setOcrProgress] = useState<OCRProgress>({ current: 0, total: 0, status: '' });
     const [ocrResults, setOcrResults] = useState<any[]>([]);
@@ -31,6 +41,14 @@ function App() {
     const workerRef = useRef<Worker | null>(null);
 
     useEffect(() => {
+        // The PaddleOCR Web Worker is only needed when OCR_ENGINE is 'paddle'.
+        // When using the native engine (oneocr-rs / Rust) we skip this entirely
+        // so the ONNX models are never downloaded or loaded into memory.
+        if (OCR_ENGINE !== 'paddle') {
+            console.log('[OCR] Native engine active — PaddleOCR worker not started.');
+            return;
+        }
+
         const worker = new OCRWorker();
         workerRef.current = worker;
 
@@ -85,9 +103,19 @@ function App() {
         }
     }, [ocrProgress, ocrStatus]);
 
+    // ── File selection ──────────────────────────────────────────────────────
+    //
+    // In Tauri v2, `<input type="file">` does NOT expose file.path reliably.
+    // For the native OCR engine we need the real OS path, so we use the
+    // Tauri dialog plugin (open()) which returns the path directly.
+    // For the Paddle engine we keep the standard HTML input (unchanged).
+
+    /** Called by the hidden <input type="file"> — used only in Paddle mode */
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
-            setFile(e.target.files[0]);
+            const selectedFile = e.target.files[0];
+            setFile(selectedFile);
+            setFilePath(null); // path not needed for Paddle
             setOcrResults([]);
             setOcrStatus('idle');
             setRedactions({});
@@ -95,8 +123,49 @@ function App() {
         }
     };
 
+    /** Called by the "Open PDF" button — used in Native mode (and optionally Paddle) */
+    const handleOpenFileDialog = async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+
+            // openDialog returns the selected path string (or null if cancelled)
+            const selected = await openDialog({
+                multiple: false,
+                filters: [{ name: 'PDF', extensions: ['pdf'] }],
+            });
+
+            if (!selected || typeof selected !== 'string') return;
+
+            const path = selected as string;
+            setFilePath(path);
+
+            // Read via custom Rust command (avoids plugin-fs permission issues)
+            const bytes: number[] = await invoke('read_file_bytes', { path });
+            const uint8 = new Uint8Array(bytes);
+            const fileName = path.split(/[\\\/]/).pop() ?? 'document.pdf';
+            const fileObj = new File([uint8], fileName, { type: 'application/pdf' });
+
+            setFile(fileObj);
+            setOcrResults([]);
+            setOcrStatus('idle');
+            setRedactions({});
+            setIsPanelOpen(false);
+        } catch (err) {
+            console.error('[App] Failed to open file dialog:', err);
+        }
+    };
+
     const startOCR = async () => {
-        if (!file || !workerRef.current || workerStatus !== 'ready') return;
+        if (!file) return;
+
+        // Guard: native engine requires a real filesystem path
+        if (OCR_ENGINE === 'native' && !filePath) {
+            console.error('[OCR] Native engine requires a file path. Use the "Open PDF" dialog button.');
+            alert('Por favor usa el botón "Open PDF" para seleccionar el archivo (necesario para el motor nativo).');
+            return;
+        }
+        // Guard: paddle engine requires the web worker to be ready
+        if (OCR_ENGINE === 'paddle' && (!workerRef.current || workerStatus !== 'ready')) return;
 
         setOcrStatus('processing');
         setOcrResults([]);
@@ -115,19 +184,47 @@ function App() {
 
         setOcrProgress({ current: 0, total: numPages, status: 'Starting...' });
 
+        const dpi = isHighAccuracy ? 300 : 200;
+        const useNative = OCR_ENGINE === 'native' && !!filePath;
+
         for (let i = 0; i < numPages; i++) {
-            setOcrProgress(prev => ({ ...prev, status: `Processing page ${i + 1}/${numPages}` }));
+            setOcrProgress(prev => ({ ...prev, status: `Processing page ${i + 1}/${numPages} (${useNative ? 'native' : 'paddle'})` }));
 
-            const bufferCopy = arrayBuffer.slice(0);
-
-            workerRef.current.postMessage({
-                type: 'PROCESS_PAGE',
-                payload: {
-                    pdfData: bufferCopy,
-                    pageIndex: i,
-                    mode: isHighAccuracy ? 'HIGH_ACCURACY' : 'PERFORMANCE'
+            if (useNative) {
+                // ── NATIVE PATH ─────────────────────────────────────────────────
+                // invoke() runs on Main Thread — Rust handles render + OCR in its own thread.
+                try {
+                    const result = await nativeOcrPage(filePath!, i, dpi);
+                    // Emit same shape as the Worker RESULT message
+                    setOcrResults(prev => {
+                        const newResults = [...prev];
+                        newResults[i] = { pageIndex: i, ...result };
+                        return newResults;
+                    });
+                    setOcrProgress(prev => ({ ...prev, current: prev.current + 1 }));
+                } catch (err) {
+                    console.error(`[OCR Native] Page ${i} failed:`, err);
+                    setOcrStatus('error');
                 }
-            }, [bufferCopy]);
+            } else {
+                // ── PADDLE PATH ─────────────────────────────────────────────────
+                // Delegate to the Web Worker (unchanged behaviour)
+                const bufferCopy = arrayBuffer.slice(0);
+                workerRef.current!.postMessage({
+                    type: 'PROCESS_PAGE',
+                    payload: {
+                        pdfData: bufferCopy,
+                        pageIndex: i,
+                        mode: isHighAccuracy ? 'HIGH_ACCURACY' : 'PERFORMANCE'
+                    }
+                }, [bufferCopy]);
+            }
+        }
+
+        // For native, all pages resolved synchronously above — finish immediately
+        if (useNative) {
+            setOcrStatus('done');
+            setIsPanelOpen(true);
         }
     };
 
@@ -237,17 +334,37 @@ function App() {
                         High Accuracy
                     </label>
 
-                    <label style={{
-                        background: '#4a5568',
-                        padding: '6px 12px',
-                        borderRadius: '4px',
-                        fontSize: '13px',
-                        cursor: 'pointer',
-                        transition: 'background 0.2s'
-                    }}>
-                        {file ? 'Change PDF' : 'Open PDF'}
-                        <input type="file" accept="application/pdf" onChange={handleFileChange} style={{ display: 'none' }} />
-                    </label>
+                    {OCR_ENGINE === 'native' ? (
+                        // Native mode: use Tauri dialog to get the OS file path
+                        <button
+                            onClick={handleOpenFileDialog}
+                            style={{
+                                background: '#4a5568',
+                                border: 'none',
+                                color: 'white',
+                                padding: '6px 12px',
+                                borderRadius: '4px',
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                                transition: 'background 0.2s'
+                            }}
+                        >
+                            {file ? 'Cambiar PDF' : 'Abrir PDF'}
+                        </button>
+                    ) : (
+                        // Paddle mode: standard HTML file input (no path needed)
+                        <label style={{
+                            background: '#4a5568',
+                            padding: '6px 12px',
+                            borderRadius: '4px',
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                            transition: 'background 0.2s'
+                        }}>
+                            {file ? 'Change PDF' : 'Open PDF'}
+                            <input type="file" accept="application/pdf" onChange={handleFileChange} style={{ display: 'none' }} />
+                        </label>
+                    )}
 
                     {file && (
                         <button
@@ -315,7 +432,7 @@ function App() {
                             ocrResults={ocrResults}
                             redactions={redactions}
                             onRemoveRedaction={handleRemoveRedaction}
-                        // Listen for the custom event inside PDFViewer
+                            showOverlay={showOverlay}
                         />
                     ) : (
                         <div style={{
@@ -353,7 +470,12 @@ function App() {
             <OCRButton
                 onClick={startOCR}
                 status={ocrStatus}
-                disabled={!file || workerStatus !== 'ready' || ocrStatus === 'processing'}
+                disabled={
+                    !file ||
+                    // Only gate on worker readiness when Paddle engine is active
+                    (OCR_ENGINE === 'paddle' && workerStatus !== 'ready') ||
+                    ocrStatus === 'processing'
+                }
             />
         </div>
     );

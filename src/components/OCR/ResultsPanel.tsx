@@ -86,7 +86,8 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onC
                             padding: '6px 10px',
                             border: '1px solid #cbd5e0',
                             borderRadius: '4px',
-                            fontSize: '13px'
+                            fontSize: '13px',
+                            color: '#2d3748'
                         }}
                     />
                     <button

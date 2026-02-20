@@ -86,7 +86,6 @@ export const OCRTextLayer = ({ results, width, height, showDebug = false, native
         return false;
     };
 
-    // Memoize text items to avoid re-rendering
     const textItems = useMemo(() => {
         // Create a temporary context for measuring text
         const canvas = document.createElement('canvas');
@@ -127,23 +126,25 @@ export const OCRTextLayer = ({ results, width, height, showDebug = false, native
                         transformOrigin: 'left top',
                         transform: `scaleX(${scaleX})`,
                         // Important: Make it invisible but selectable
-                        color: showDebug ? 'rgba(0,0,0,0)' : 'transparent',
+                        // If showDebug is true, we want to see the text (red).
+                        // If showDebug is false, we want it transparent but PRESENT in DOM for selection.
+                        color: showDebug ? 'rgba(255, 0, 0, 0.6)' : 'transparent',
 
                         overflow: 'visible',
                         fontFamily: 'sans-serif',
                         zIndex: 5, // Below debug boxes
+                        pointerEvents: 'auto', // Ensure individual items capture clicks
+                        userSelect: 'text'     // Ensure standard browser selection
                     }}
                     title={showDebug ? `Conf: ${item.confidence.toFixed(2)}` : undefined}
                 >
-                    <span style={{ color: showDebug ? 'rgba(255, 0, 0, 0.6)' : 'transparent' }}>
-                        {item.text}
-                    </span>
+                    {item.text}
                 </div>
             );
         });
     }, [results, width, height, showDebug, isNativeMode, nativeItems, viewport]);
 
-    // Debug boxes
+    // Debug boxes (Only render if showDebug is true)
     const debugBoxes = useMemo(() => {
         if (!showDebug) return null;
         return results.map((item, index) => {
