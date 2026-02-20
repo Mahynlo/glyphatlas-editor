@@ -192,3 +192,36 @@ export function calculateDistance(box1: Box, box2: Box): DistanceResult;
 export function groupTextElements(elements: TextElement[], config?: Partial<GroupingConfig>): Paragraph[][];
 
 export function createParagraph(group: TextElement[]): Paragraph;
+
+// =============================================================================
+// Native OCR Types (oneocr-rs via Tauri, Windows only)
+// =============================================================================
+
+export interface NativeOcrWordResult {
+  text: string;
+  confidence: number;
+  /** Quad normalized [0..1]: TL → TR → BR → BL (same order as PaddleOCR `box`) */
+  box_quad: [[number, number], [number, number], [number, number], [number, number]];
+  /** Axis-aligned rect normalized [0..1]: [x, y, width, height] (same as PaddleOCR `rect`) */
+  rect: [number, number, number, number];
+}
+
+export interface NativeOcrLineResult {
+  text: string;
+  box_quad: [[number, number], [number, number], [number, number], [number, number]];
+  words: NativeOcrWordResult[];
+}
+
+export interface NativeOcrPageResult {
+  page_index: number;
+  image_width: number;
+  image_height: number;
+  dpi: number;
+  lines: NativeOcrLineResult[];
+  /** Flat word list — same shape as PaddleOCR worker output */
+  words: NativeOcrWordResult[];
+}
+
+/** Active OCR engine selector (set in config.js) */
+export type OcrEngineType = 'native' | 'paddle';
+export declare const OCR_ENGINE: OcrEngineType;

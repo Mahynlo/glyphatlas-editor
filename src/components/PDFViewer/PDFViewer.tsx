@@ -195,27 +195,75 @@ const PDFPage = ({ id, pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox
         };
     }, [pdfDoc, pageNumber, scale]);
 
+    useEffect(() => {
+        if (!pdfDoc || !pageNumber || !viewport) return;
+
+        const renderTextLayer = async () => {
+            try {
+                const page = await pdfDoc.getPage(pageNumber);
+                const textContent = await page.getTextContent();
+
+                if (textLayerRef.current) {
+                    textLayerRef.current.innerHTML = ''; // Clear previous
+
+                    // Add standard PDF.js text layer CSS class
+                    textLayerRef.current.style.setProperty('--scale-factor', `${scale}`);
+
+                    try {
+                        // PDF.js v5: TextLayer is often in the viewer module.
+                        // We use dynamic import to avoid build issues.
+                        // @ts-ignore
+                        const pdfjsViewer = await import('pdfjs-dist/web/pdf_viewer.mjs');
+                        const TextLayer = pdfjsViewer.TextLayer;
+
+                        if (TextLayer) {
+                            const layer = new TextLayer({
+                                textContentSource: textContent,
+                                container: textLayerRef.current,
+                                viewport: viewport,
+                                textDivs: []
+                            });
+                            await layer.render();
+                        } else {
+                            // Fallback check
+                            throw new Error("TextLayer not found in viewer module");
+                        }
+                    } catch (importErr) {
+                        console.warn("TextLayer dynamic import failed, checking globals...", importErr);
+                        // Fallback for some setups: Check window or main lib
+                        // @ts-ignore
+                        const TextLayer = pdfjsLib.TextLayer || window.pdfjsLib?.TextLayer;
+                        if (TextLayer) {
+                            const layer = new TextLayer({
+                                textContentSource: textContent,
+                                container: textLayerRef.current,
+                                viewport: viewport,
+                                textDivs: []
+                            });
+                            await layer.render();
+                        } else {
+                            console.error("Failed to load TextLayer from any source");
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Text layer render error:", e);
+            }
+        };
+
+        renderTextLayer();
+    }, [pdfDoc, pageNumber, viewport, scale]);
+
     return (
         <div id={id} ref={wrapperRef} className="pdf-page" style={{ position: 'relative', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}>
+            <style>{`
+                .textLayer { pointer-events: none !important; }
+                .textLayer > span, .textLayer > br { pointer-events: auto !important; }
+            `}</style>
+
             <canvas key={`${pageNumber}-${scale}`} ref={canvasRef} />
 
-            {/* Native Text Layer */}
-            <div
-                ref={textLayerRef}
-                className="textLayer"
-                style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    overflow: 'hidden',
-                    lineHeight: '1.0',
-                    '--scale-factor': scale
-                } as any}
-            />
-
-            {/* OCR Overlay */}
+            {/* OCR Overlay (Behind Native Text) */}
             {ocrResult && viewport && (
                 <OCRTextLayer
                     results={ocrResult.results}
@@ -227,22 +275,39 @@ const PDFPage = ({ id, pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox
                 />
             )}
 
+            {/* Native Text Layer (Top - for high fidelity selection) */}
+            <div
+                ref={textLayerRef}
+                className="textLayer"
+                style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    overflow: 'hidden',
+                    lineHeight: '1.0',
+                    // PDF.js requires this CSS variable for scaling
+                    '--scale-factor': scale
+                } as any}
+            />
+
             {/* Redaction Layer */}
             {redactedBoxes && redactedBoxes.length > 0 && viewport && (
                 <div className="redaction-layer" style={{
                     position: 'absolute',
                     top: 0,
                     left: 0,
-                    // pointerEvents: 'none', // Removed global disable so children can be clicked
                     width: '100%',
                     height: '100%',
-                    zIndex: 50 // On top of text
+                    zIndex: 50,
+                    pointerEvents: 'none' // Container is transparent — only boxes capture events
                 }}>
                     {redactedBoxes.map((box, idx) => (
                         <div
                             key={idx}
                             onClick={(e) => {
-                                e.stopPropagation(); // Prevent other clicks
+                                e.stopPropagation();
                                 if (confirm('Remove this redaction?')) {
                                     onRemoveBox?.(idx);
                                 }
@@ -256,8 +321,8 @@ const PDFPage = ({ id, pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox
                                 height: `${(box[3]) * 100}%`,
                                 background: 'black',
                                 opacity: 1,
-                                cursor: 'pointer', // Suggest interaction
-                                pointerEvents: 'auto' // Re-enable clicks
+                                cursor: 'pointer',
+                                pointerEvents: 'auto' // Each box is individually clickable
                             }}
                         />
                     ))}

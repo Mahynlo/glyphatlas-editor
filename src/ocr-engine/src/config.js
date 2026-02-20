@@ -3,6 +3,13 @@
 // =============================================================================
 // Configuración por defecto para el motor OCR multilingüe
 
+// -----------------------------------------------------------------------------
+// OCR Engine selection
+// 'native' — Windows oneocr-rs (default, faster, uses Windows native OCR APIs)
+// 'paddle' — PaddleOCR ONNX running in a Web Worker (cross-platform fallback)
+// -----------------------------------------------------------------------------
+export const OCR_ENGINE = 'native';
+
 export const DEFAULT_CONFIG = {
     DETECTION: {
         MODEL_PATH: '/models/det/PP-OCRv5_mobile_det.onnx',

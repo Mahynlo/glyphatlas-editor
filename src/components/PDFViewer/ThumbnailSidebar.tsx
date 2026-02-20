@@ -64,53 +64,68 @@ export const ThumbnailSidebar: React.FC<ThumbnailSidebarProps> = ({ file, onPage
 const Thumbnail = ({ pageIndex, pdfDoc, isActive, onClick }: { pageIndex: number, pdfDoc: pdfjsLib.PDFDocumentProxy, isActive: boolean, onClick: () => void }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const renderTaskRef = useRef<any>(null);
+    // Stores the in-flight render Promise so a second invocation can await it
+    const isRenderingRef = useRef<Promise<void> | null>(null);
 
     useEffect(() => {
         if (!pdfDoc || !canvasRef.current) return;
 
+        let aborted = false; // local flag — true when cleanup runs before render finishes
+
         const renderThumbnail = async () => {
-            // Cancel previous render
+            // Cancel any in-progress render from a previous invocation
             if (renderTaskRef.current) {
-                try {
-                    renderTaskRef.current.cancel();
-                } catch (e) { /* ignore */ }
+                try { renderTaskRef.current.cancel(); } catch (_) { /* ignore */ }
+                renderTaskRef.current = null;
             }
+
+            // If another render is already in flight on this canvas, wait for it to finish
+            // before we attempt to render. isRenderingRef stores the Promise.
+            if (isRenderingRef.current) {
+                try { await isRenderingRef.current; } catch (_) { /* ignore */ }
+            }
+
+            // After awaiting, check if our cleanup already ran (effect was torn down)
+            if (aborted) return;
+
+            // Claim the canvas by storing our completion Promise
+            let markDone!: () => void;
+            isRenderingRef.current = new Promise<void>(res => { markDone = res; });
 
             try {
                 const page = await pdfDoc.getPage(pageIndex + 1);
-                // Scale 0.2 is usually good for thumbnails (approx 150px width for A4)
+                if (aborted) return;
+
                 const viewport = page.getViewport({ scale: 0.2 });
                 const canvas = canvasRef.current;
 
-                if (canvas) {
+                if (canvas && !aborted) {
                     const context = canvas.getContext('2d');
                     canvas.height = viewport.height;
                     canvas.width = viewport.width;
 
                     if (context) {
-                        const renderContext = {
-                            canvasContext: context,
-                            viewport: viewport,
-                            canvas: canvas,
-                        };
-                        renderTaskRef.current = page.render(renderContext);
+                        renderTaskRef.current = page.render({ canvasContext: context, viewport });
                         await renderTaskRef.current.promise;
                     }
                 }
             } catch (e: any) {
-                if (e.name !== 'RenderingCancelledException') {
-                    console.error("Thumbnail render error:", e);
+                if (e?.name !== 'RenderingCancelledException') {
+                    console.error('Thumbnail render error:', e);
                 }
+            } finally {
+                isRenderingRef.current = null;
+                markDone?.();
             }
         };
 
         renderThumbnail();
 
         return () => {
+            aborted = true;
             if (renderTaskRef.current) {
-                try {
-                    renderTaskRef.current.cancel();
-                } catch (e) { /* ignore */ }
+                try { renderTaskRef.current.cancel(); } catch (_) { /* ignore */ }
+                renderTaskRef.current = null;
             }
         };
     }, [pdfDoc, pageIndex]);
