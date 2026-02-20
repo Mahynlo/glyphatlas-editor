@@ -6,28 +6,28 @@ Este documento describe la arquitectura de alto nivel de la aplicación **Tauri 
 
 ```mermaid
 graph TD
-    User[Usuario] -->|Sube PDF| App[App (React)]
-    App -->|Renderiza PDF| PDFViewer[PDF.js Viewer]
-    App -->|Inicia OCR| Worker[OCR Worker (Web Worker)]
+    User[Usuario] -->|Sube PDF| App["App (React)"]
+    App -->|Renderiza PDF| PDFViewer["PDF.js Viewer"]
+    App -->|Inicia OCR| Worker["OCR Worker (Web Worker)"]
     
     subgraph "OCR Engine (Worker)"
-        Worker -->|Decodifica Página| PdfDist[PDF.js (Dist)]
-        Worker -->|Extrae Texto Nativo| Native[Texto Nativo]
+        Worker -->|Decodifica Página| PdfDist["PDF.js (Dist)"]
+        Worker -->|Extrae Texto Nativo| Native["Texto Nativo"]
         Worker -->|Renderiza Imagen| Canvas[OffscreenCanvas]
         
-        Canvas -->|Preprocesamiento| OpenCV[OpenCV.js]
-        OpenCV -->|Tensores| ONNX[ONNX Runtime Web]
+        Canvas -->|Preprocesamiento| OpenCV["OpenCV.js"]
+        OpenCV -->|Tensores| ONNX["ONNX Runtime Web"]
         
-        ONNX -->|Detección| PPOCR_Det[Modelo DBNet (Det)]
-        ONNX -->|Reconocimiento| PPOCR_Rec[Modelo SVTR (Rec)]
+        ONNX -->|Detección| PPOCR_Det["Modelo DBNet (Det)"]
+        ONNX -->|Reconocimiento| PPOCR_Rec["Modelo SVTR (Rec)"]
         
-        PPOCR_Det -->|Cajas| Merger[Lógica Híbrida]
+        PPOCR_Det -->|Cajas| Merger["Lógica Híbrida"]
         PPOCR_Rec -->|Texto| Merger
         Native -->|Texto| Merger
     end
     
     Merger -->|Resultados JSON| App
-    App -->|Overlay| UI[Interfaz de Usuario]
+    App -->|Overlay| UI["Interfaz de Usuario"]
     UI -->|Redacción/Búsqueda| User
 ```
 

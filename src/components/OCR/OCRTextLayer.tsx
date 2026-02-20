@@ -19,51 +19,97 @@ interface OCRTextLayerProps {
         recognitionTime: number;
     };
     nativeTextLayerRef?: React.RefObject<HTMLDivElement | null>;
+    isNativeMode?: boolean;
+    nativeItems?: any[]; // [NEW]
+    viewport?: any; // [NEW] pdfjs Viewport object
 }
 
-export const OCRTextLayer = ({ results, width, height, showDebug = false, nativeTextLayerRef, stats }: OCRTextLayerProps) => {
-    // Conflict Resolution: Hide native text layer when OCR layer is active
+export const OCRTextLayer = ({ results, width, height, showDebug = false, nativeTextLayerRef, stats, isNativeMode = false, nativeItems = [], viewport }: OCRTextLayerProps) => {
+    // Conflict Resolution: Native layer is ALWAYS visible
     useEffect(() => {
         if (nativeTextLayerRef?.current) {
-            // Option 1: Hide completely
-            // nativeTextLayerRef.current.style.display = 'none';
-            // Option 2: Disable pointer events (better if we want to keep it visible but unselectable)
-            // But we want to avoid double selection.
-            // If OCR results exist, we assume they are better or supplementary for this page.
+            nativeTextLayerRef.current.style.visibility = 'visible';
+            nativeTextLayerRef.current.style.pointerEvents = 'auto'; // Native text is always selectable if present
+        }
+    }, [nativeTextLayerRef]);
 
-            // Current Strategy: If we have results, hide native layer to rely on OCR text
-            if (results && results.length > 0) {
-                nativeTextLayerRef.current.style.visibility = 'hidden';
-                nativeTextLayerRef.current.style.pointerEvents = 'none';
-            } else {
-                nativeTextLayerRef.current.style.visibility = 'visible';
-                nativeTextLayerRef.current.style.pointerEvents = 'auto';
+    // Check if an OCR box overlaps with ANY native text item
+    const isOverlappingNative = (ocrBox: number[]) => {
+        if (!nativeItems || nativeItems.length === 0 || !viewport) return false;
+
+        // OCR Box to Viewport Rect [x, y, w, h] in pixels
+        // ocrBox is [x, y, w, h] normalized
+        const ocrX = ocrBox[0] * width;
+        const ocrY = ocrBox[1] * height;
+        const ocrW = ocrBox[2] * width;
+        const ocrH = ocrBox[3] * height;
+
+        // Iterate native items to check intersection
+        // Optimization: Use a spatial index if slow, but for single page ~50-100 items it's fine.
+        for (const item of nativeItems) {
+            // item.transform is [scaleX, skewY, skewX, scaleY, x, y] (PDF coords)
+            // item.width, item.height (sometimes unscaled or needing calc)
+            // Robust way: Use viewport.convertToViewportRectangle
+
+            // Native item bbox in PDF coords: [x, y, x+w, y+h]
+            // Note: PDF y increases upwards usually, but viewport handles transform.
+            const tx = item.transform;
+            const x = tx[4];
+            const y = tx[5];
+            const w = item.width;
+            const h = item.height || 10; // Fallback height
+
+            // Convert [x, y, x+w, y+h]
+            // Note: pdf.js rect is [minX, minY, maxX, maxY]
+            const nativeRect = [x, y, x + w, y + h];
+            const viewRect = viewport.convertToViewportRectangle(nativeRect);
+            // viewRect is [x1, y1, x2, y2] in browser pixels
+
+            // Standardize to [minX, minY, maxX, maxY]
+            const vx = Math.min(viewRect[0], viewRect[2]);
+            const vy = Math.min(viewRect[1], viewRect[3]);
+            const vw = Math.abs(viewRect[2] - viewRect[0]);
+            const vh = Math.abs(viewRect[3] - viewRect[1]);
+
+            // Check AABB Intersection
+            if (
+                ocrX < vx + vw &&
+                ocrX + ocrW > vx &&
+                ocrY < vy + vh &&
+                ocrY + ocrH > vy
+            ) {
+                // Significant overlap?
+                // Let's assume ANY overlap means "this is the same text".
+                return true;
             }
         }
-
-        return () => {
-            // Cleanup: Restore native layer
-            if (nativeTextLayerRef?.current) {
-                nativeTextLayerRef.current.style.visibility = 'visible';
-                nativeTextLayerRef.current.style.pointerEvents = 'auto';
-            }
-        };
-    }, [results, nativeTextLayerRef]);
+        return false;
+    };
 
     // Memoize text items to avoid re-rendering
     const textItems = useMemo(() => {
+        // Create a temporary context for measuring text
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+
         return results.map((item, index) => {
-            // item.box is [x, y, w, h] normalized
-            // Convert to pixels for positioning
+            // Check if this specific item overlaps with native text
+            const hasNativeOverlap = isOverlappingNative(item.box);
+
+            // IF OVERLAP: Do NOT render text overlay. User selects native text.
+            if (hasNativeOverlap) return null;
+
+            // IF NO OVERLAP: Render text overlay (it's an image/scanned part).
             const coords = CoordinateConverter.relativeToViewport(item.box, width, height);
-
-            // PDF.js TextLayer style:
-            // Use transform: scale to fit text exactly into width
-            // We need to support font resizing.
-            // A simple approximation is using a base font size and scaling.
-
-            // Heuristic for font size: Height of the box * 0.8 (approx)
             const fontSize = coords.height * 0.85;
+
+            let scaleX = 1;
+            if (context) {
+                context.font = `${fontSize}px sans-serif`;
+                const textMetrics = context.measureText(item.text);
+                const textWidth = textMetrics.width;
+                if (textWidth > 0) scaleX = coords.width / textWidth;
+            }
 
             return (
                 <div
@@ -78,22 +124,24 @@ export const OCRTextLayer = ({ results, width, height, showDebug = false, native
                         lineHeight: 1,
                         whiteSpace: 'nowrap',
                         cursor: 'text',
-                        transformOrigin: '0 0',
-                        // Improve text selection feel
-                        color: showDebug ? 'rgba(255, 0, 0, 0.5)' : 'transparent',
-                        // color: 'rgba(0,0,0,1)', // Debug visible text
-                        overflow: 'hidden',
+                        transformOrigin: 'left top',
+                        transform: `scaleX(${scaleX})`,
+                        // Important: Make it invisible but selectable
+                        color: showDebug ? 'rgba(0,0,0,0)' : 'transparent',
+
+                        overflow: 'visible',
                         fontFamily: 'sans-serif',
-                        // Scaling to fit width exactly if needed
-                        // transform: `scaleX(${coords.width / (textLength estimator)})` -> hard to estimate
+                        zIndex: 5, // Below debug boxes
                     }}
                     title={showDebug ? `Conf: ${item.confidence.toFixed(2)}` : undefined}
                 >
-                    {item.text}
+                    <span style={{ color: showDebug ? 'rgba(255, 0, 0, 0.6)' : 'transparent' }}>
+                        {item.text}
+                    </span>
                 </div>
             );
         });
-    }, [results, width, height, showDebug]);
+    }, [results, width, height, showDebug, isNativeMode, nativeItems, viewport]);
 
     // Debug boxes
     const debugBoxes = useMemo(() => {
