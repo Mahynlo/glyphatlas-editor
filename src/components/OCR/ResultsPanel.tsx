@@ -125,31 +125,43 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onC
                             border: '1px solid #e2e8f0',
                             borderRadius: '8px',
                             background: '#fff',
-                            overflow: 'hidden'
+                            overflow: 'hidden',
+                            marginBottom: '16px',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                         }}>
                             <div className="page-header" style={{
-                                padding: '8px 12px',
-                                background: '#edf2f7',
+                                padding: '10px 12px',
+                                background: '#f7fafc',
+                                borderBottom: '1px solid #edf2f7',
                                 display: 'flex',
                                 justifyContent: 'space-between',
                                 alignItems: 'center',
-                                fontSize: '12px',
+                                fontSize: '13px',
                                 fontWeight: 600,
                                 color: '#4a5568'
                             }}>
-                                <span>Page {res.pageIndex + 1}</span>
-                                <button
-                                    onClick={() => copyToClipboard(getPageText(res))}
-                                    title="Copy Page Text"
-                                    style={{
-                                        background: 'none',
-                                        border: 'none',
-                                        color: '#4299e1',
-                                        cursor: 'pointer',
-                                        fontWeight: 600
-                                    }}>
-                                    Copy
-                                </button>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    📄 Page {res.pageIndex + 1}
+                                </span>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button
+                                        onClick={() => copyToClipboard(getPageText(res))}
+                                        title="Copy Text"
+                                        style={{
+                                            background: 'white',
+                                            border: '1px solid #cbd5e0',
+                                            padding: '4px 8px',
+                                            borderRadius: '4px',
+                                            color: '#4a5568',
+                                            cursor: 'pointer',
+                                            fontSize: '11px',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '4px'
+                                        }}>
+                                        📋 Copy
+                                    </button>
+                                </div>
                             </div>
                             <textarea
                                 defaultValue={getPageText(res)}

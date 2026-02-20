@@ -49,10 +49,59 @@ export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, sho
         loadPdf();
     }, [file]);
 
+    // Handle Scroll Navigation (from Thumbnails)
+    useEffect(() => {
+        const handleScrollRequest = (e: CustomEvent) => {
+            const pageIndex = e.detail.pageIndex;
+            const pageElement = document.getElementById(`pdf-page-${pageIndex}`);
+            if (pageElement) {
+                pageElement.scrollIntoView({ behavior: 'smooth' });
+            }
+        };
+
+        window.addEventListener('scroll-to-page' as any, handleScrollRequest as any);
+        return () => {
+            window.removeEventListener('scroll-to-page' as any, handleScrollRequest as any);
+        };
+    }, []);
+
+    // Track which page is currently visible using IntersectionObserver
+    useEffect(() => {
+        if (!pages.length) return;
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                // Find the entry with the highest intersection ratio
+                const mostVisible = entries
+                    .filter(e => e.isIntersecting)
+                    .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+
+                if (mostVisible) {
+                    const pageIndex = parseInt(
+                        mostVisible.target.id.replace('pdf-page-', ''), 10
+                    );
+                    if (!isNaN(pageIndex)) {
+                        window.dispatchEvent(
+                            new CustomEvent('page-changed', { detail: { pageIndex } })
+                        );
+                    }
+                }
+            },
+            { threshold: [0.3, 0.6] }
+        );
+
+        // Observe all page elements
+        pages.forEach((_, i) => {
+            const el = document.getElementById(`pdf-page-${i}`);
+            if (el) observer.observe(el);
+        });
+
+        return () => observer.disconnect();
+    }, [pages]);
 
     return (
         <div className="pdf-viewer-container" ref={containerRef} style={{
-            height: '80vh',
+            height: '100%',
             overflow: 'auto',
             background: '#e5e5e5',
             padding: '20px',
@@ -65,12 +114,13 @@ export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, sho
                     {pages.map(pageNum => (
                         <PDFPage
                             key={pageNum}
+                            id={`pdf-page-${pageNum - 1}`}
                             pageNumber={pageNum}
                             pdfDoc={pdfDoc}
                             ocrResult={ocrResults?.[pageNum - 1]}
-                            redactedBoxes={redactions?.[pageNum - 1] || []} // Pass page redactions
-                            onRemoveBox={(boxIdx) => onRemoveRedaction?.(pageNum - 1, boxIdx)} // Pass Handler
-                            showOverlay={showOverlay} // [NEW] Pass down
+                            redactedBoxes={redactions?.[pageNum - 1] || []}
+                            onRemoveBox={(boxIdx) => onRemoveRedaction?.(pageNum - 1, boxIdx)}
+                            showOverlay={showOverlay}
                         />
                     ))}
                 </div>
@@ -79,7 +129,8 @@ export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, sho
     );
 };
 
-const PDFPage = ({ pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox, showOverlay }: { // [NEW]
+const PDFPage = ({ id, pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox, showOverlay }: {
+    id: string,
     pageNumber: number,
     pdfDoc: pdfjsLib.PDFDocumentProxy,
     ocrResult: any,
@@ -145,7 +196,7 @@ const PDFPage = ({ pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox, sh
     }, [pdfDoc, pageNumber, scale]);
 
     return (
-        <div ref={wrapperRef} className="pdf-page" style={{ position: 'relative', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}>
+        <div id={id} ref={wrapperRef} className="pdf-page" style={{ position: 'relative', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}>
             <canvas key={`${pageNumber}-${scale}`} ref={canvasRef} />
 
             {/* Native Text Layer */}

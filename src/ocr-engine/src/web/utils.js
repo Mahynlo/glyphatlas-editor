@@ -56,6 +56,9 @@ export class ImageProcessor {
      * @param {number} targetWidth - Ancho objetivo
      * @returns {Object} Tensor data y dimensiones
      */
+    // Shared Buffer for Recognition (Avoids GC)
+    static #recSharedBuffer = null;
+
     static imageDataToTensor(imageData, targetHeight = 48, targetWidth = null) {
         // Variable Width Mode (Match Node.js behavior)
         let scaledWidth, scaledHeight;
@@ -97,7 +100,12 @@ export class ImageProcessor {
         const resizedData = ctx.getImageData(0, 0, finalWidth, finalHeight);
 
         // Convertir a formato CHW (Channels, Height, Width) normalizado
-        const float32Data = new Float32Array(3 * finalHeight * finalWidth);
+        const requiredSize = 3 * finalHeight * finalWidth;
+
+        // MEMORY OPTIMIZATION REVERTED: Shared Buffer caused accuracy regression (97% -> 83%).
+        // Suspected issue: Data overwrites during async processing or batching.
+        // Reverting to safe per-call allocation.
+        const float32Data = new Float32Array(requiredSize);
 
         for (let i = 0; i < finalHeight * finalWidth; i++) {
             const r = resizedData.data[i * 4] / 255.0;
@@ -105,13 +113,12 @@ export class ImageProcessor {
             const b = resizedData.data[i * 4 + 2] / 255.0;
 
             // Normalization: (val - 0.5) / 0.5  =>  Range [-1, 1]
-            // Standard for PaddleOCR Recognition models (unlike Detection which uses ImageNet)
+            // Standard for PaddleOCR Recognition models
             const normR = (r - 0.5) / 0.5;
             const normG = (g - 0.5) / 0.5;
             const normB = (b - 0.5) / 0.5;
 
             // BGR Order (Node Parity / OpenCV Standard)
-            // Channel 0 = B, Channel 1 = G, Channel 2 = R
             float32Data[i] = normB;
             float32Data[targetHeight * targetWidth + i] = normG;
             float32Data[2 * targetHeight * targetWidth + i] = normR;
@@ -122,6 +129,7 @@ export class ImageProcessor {
             dims: [1, 3, finalHeight, finalWidth]
         };
     }
+
 
     /**
      * Recorta una región de la imagen
@@ -374,6 +382,91 @@ export class ImageProcessor {
         if (!result[3]) result[3] = pts[3];
 
         return result;
+    }
+
+    /**
+     * Aplica un filtro de nitidez (Sharpening) usando un kernel Laplaciano.
+     * Mejora la detección de texto en PDFs escaneados o borrosos.
+     * @param {ImageData} imageData 
+     * @returns {ImageData}
+     */
+    static applySharpening(imageData) {
+        const w = imageData.width;
+        const h = imageData.height;
+        const src = imageData.data;
+        const output = new ImageData(w, h);
+        const dst = output.data;
+
+        // Kernel Laplaciano (3x3) - Standard Sharpen
+        //  0 -1  0
+        // -1  5 -1
+        //  0 -1  0
+        const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+
+        for (let y = 1; y < h - 1; y++) {
+            for (let x = 1; x < w - 1; x++) {
+                const idx = (y * w + x) * 4;
+                let r = 0, g = 0, b = 0;
+
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const kIdx = ((y + ky) * w + (x + kx)) * 4;
+                        const weight = kernel[(ky + 1) * 3 + (kx + 1)];
+                        r += src[kIdx] * weight;
+                        g += src[kIdx + 1] * weight;
+                        b += src[kIdx + 2] * weight;
+                    }
+                }
+
+                dst[idx] = Math.min(255, Math.max(0, r));
+                dst[idx + 1] = Math.min(255, Math.max(0, g));
+                dst[idx + 2] = Math.min(255, Math.max(0, b));
+                dst[idx + 3] = 255;
+            }
+        }
+        return output;
+    }
+
+    /**
+     * Aplica Adaptive Thresholding para mejorar contraste local.
+     * Útil para eliminar fondos grises o ruido.
+     * @param {ImageData} imageData 
+     * @returns {ImageData}
+     */
+    static applyAdaptiveThreshold(imageData) {
+        // Simple implementation: Contrast Stretching or Local?
+        // Let's implement a verified Contrast Stretch first which is faster in JS.
+        // True Adaptive Threshold (Sauvola/Niblack) is slow in pure JS loops.
+        // We'll use a local enhancement logic similar to the reference repo:
+        // "Math.pow((gray - 50) / 130, 1.2) * 255" equivalent.
+
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+
+            // Grayscale
+            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+
+            let enhanced;
+            // Adaptive logic inspired by reference
+            if (gray < 50) {
+                enhanced = 0; // Black text
+            } else if (gray < 200) {
+                // Stretch midtones
+                enhanced = Math.pow((gray - 50) / 150, 1.2) * 255;
+            } else {
+                enhanced = 255; // White background
+            }
+
+            enhanced = Math.min(255, Math.max(0, enhanced));
+
+            data[i] = enhanced;
+            data[i + 1] = enhanced;
+            data[i + 2] = enhanced;
+        }
+        return imageData;
     }
 
     /**

@@ -4,6 +4,7 @@ import { PDFViewer } from "./components/PDFViewer/PDFViewer";
 import { OCRButton } from "./components/OCR/OCRButton";
 import { ProgressBar } from "./components/OCR/ProgressBar";
 import { ResultsPanel } from "./components/OCR/ResultsPanel";
+import { ThumbnailSidebar } from "./components/PDFViewer/ThumbnailSidebar";
 import OCRWorker from './workers/ocr.worker.js?worker';
 
 interface OCRProgress {
@@ -21,6 +22,9 @@ function App() {
     const [isPanelOpen, setIsPanelOpen] = useState(false);
     const [isHighAccuracy, setIsHighAccuracy] = useState(false);
     const [showOverlay, setShowOverlay] = useState(true); // [NEW]
+
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const [currentPage, setCurrentPage] = useState(0);
 
     const [redactions, setRedactions] = useState<{ [page: number]: any[] }>({});
 
@@ -64,9 +68,14 @@ function App() {
         setWorkerStatus('initializing');
         worker.postMessage({ type: 'INIT', payload: {} });
 
-        return () => {
-            worker.terminate();
-        };
+        return () => { worker.terminate(); };
+    }, []);
+
+    // Sync current page from PDFViewer → ThumbnailSidebar
+    useEffect(() => {
+        const handler = (e: CustomEvent) => setCurrentPage(e.detail.pageIndex);
+        window.addEventListener('page-changed' as any, handler as any);
+        return () => window.removeEventListener('page-changed' as any, handler as any);
     }, []);
 
     useEffect(() => {
@@ -182,11 +191,31 @@ function App() {
                 zIndex: 30
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Tauri AI PDF Editor</h1>
+                    {/* Sidebar Toggle Button */}
+                    {file && (
+                        <button
+                            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '20px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                padding: '4px'
+                            }}
+                            title={isSidebarOpen ? "Hide Thumbnails" : "Show Thumbnails"}
+                        >
+                            {isSidebarOpen ? '◀' : '▶'}
+                        </button>
+                    )}
+                    <h1 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Tauri AI PDF OCR</h1>
                     <span style={{ fontSize: '12px', background: '#4a5568', padding: '2px 6px', borderRadius: '4px' }}>v0.1.0 (WebGPU)</span>
                 </div>
 
                 <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+                    {/* ... (rest of header controls) */}
                     {workerStatus === 'initializing' && <span style={{ fontSize: '0.8rem', color: '#cbd5e0' }}>Initializing Engine...</span>}
                     {workerStatus === 'error' && <span style={{ fontSize: '0.8rem', color: '#fc8181' }}>Engine Error</span>}
 
@@ -253,6 +282,26 @@ function App() {
                 position: 'relative',
                 background: '#edf2f7'
             }}>
+                {/* Sidebar */}
+                <div style={{
+                    width: isSidebarOpen && file ? '200px' : '0px',
+                    transition: 'width 0.3s ease-in-out',
+                    overflow: 'hidden',
+                    borderRight: isSidebarOpen && file ? '1px solid #4a5568' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column'
+                }}>
+                    {file && (
+                        <ThumbnailSidebar
+                            file={file}
+                            onPageClick={(pageIndex) => {
+                                window.dispatchEvent(new CustomEvent('scroll-to-page', { detail: { pageIndex } }));
+                            }}
+                            currentPage={currentPage}
+                        />
+                    )}
+                </div>
+
                 <div style={{
                     flex: 1,
                     position: 'relative',
@@ -265,7 +314,8 @@ function App() {
                             file={file}
                             ocrResults={ocrResults}
                             redactions={redactions}
-                            onRemoveRedaction={handleRemoveRedaction} // [NEW]
+                            onRemoveRedaction={handleRemoveRedaction}
+                        // Listen for the custom event inside PDFViewer
                         />
                     ) : (
                         <div style={{

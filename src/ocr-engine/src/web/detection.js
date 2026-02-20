@@ -62,8 +62,36 @@ export class Detection {
      * @returns {Promise<Array>} Array de regiones detectadas con coordenadas
      */
     async detect(imageData, options = {}) {
-        // Preprocesar imagen
-        const { tensor, scale, padding } = this.#preprocessImage(imageData, options);
+        // 0. Advanced Preprocessing (Sharpening / Adaptive Threshold)
+        // Check local options OR config default for the current mode
+        let processedImage = imageData;
+        const preprocess = options.PREPROCESS || {};
+
+        if (preprocess.SHARPEN) {
+            // console.debug('[Web Detection] Applying Sharpening Filter...');
+            // Note: processedImage might be reassigned
+            // We use static methods from ImageProcessor which return NEW ImageData
+            // Import ImageProcessor if not available in scope (passed in utils?)
+            // Detection imports { FileLoader } from utils.js, let's update import.
+            // Wait, we need ImageProcessor. 
+            // We'll assume ImageProcessor is imported or available.
+            // Let's modify the import at the top first? 
+            // Actually, let's safeguard.
+            try {
+                const { ImageProcessor } = await import('./utils.js');
+                processedImage = ImageProcessor.applySharpening(processedImage);
+            } catch (e) { console.error("Sharpening failed", e); }
+        }
+
+        if (preprocess.ADAPTIVE_THRESH) {
+            try {
+                const { ImageProcessor } = await import('./utils.js');
+                processedImage = ImageProcessor.applyAdaptiveThreshold(processedImage);
+            } catch (e) { console.error("Adaptive Threshold failed", e); }
+        }
+
+        // Preprocesar imagen (Resize, Pad, Normalize)
+        const { tensor, scale, padding } = this.#preprocessImage(processedImage, options);
 
         // Ejecutar inferencia
         const startTime = performance.now();

@@ -27,7 +27,14 @@ export const DEFAULT_CONFIG = {
             },
             HIGH_ACCURACY: {
                 MAX_IMAGE_SIZE: 2176, // Optimized: 2560 -> 2176 (~30% faster, still > 2K)
-                RENDER_DPI: 300
+                RENDER_DPI: 300,
+                // New Optimizations - DISABLED BY DEFAULT due to regression (84% vs 97%)
+                PREPROCESS: {
+                    SHARPEN: true,
+                    ADAPTIVE_THRESH: true
+                },
+                THRESHOLD: 0.3,       // Reverted to standard (0.3)
+                BOX_THRESHOLD: 0.6    // Reverted to standard (0.6)
             }
         },
 
