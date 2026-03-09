@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { CoordinateConverter } from '../../utils/coordinates';
 
 interface OCRResultItem {
@@ -111,35 +111,50 @@ export const OCRTextLayer = ({ results, width, height, showDebug = false, native
             }
 
             return (
-                <div
-                    key={index}
-                    style={{
-                        position: 'absolute',
-                        left: `${coords.left}px`,
-                        top: `${coords.top}px`,
-                        width: `${coords.width}px`,
-                        height: `${coords.height}px`,
-                        fontSize: `${fontSize}px`,
-                        lineHeight: 1,
-                        whiteSpace: 'nowrap',
-                        cursor: 'text',
-                        transformOrigin: 'left top',
-                        transform: `scaleX(${scaleX})`,
-                        // Important: Make it invisible but selectable
-                        // If showDebug is true, we want to see the text (red).
-                        // If showDebug is false, we want it transparent but PRESENT in DOM for selection.
-                        color: showDebug ? 'rgba(255, 0, 0, 0.6)' : 'transparent',
-
-                        overflow: 'visible',
-                        fontFamily: 'sans-serif',
-                        zIndex: 5, // Below debug boxes
-                        pointerEvents: 'auto', // Ensure individual items capture clicks
-                        userSelect: 'text'     // Ensure standard browser selection
-                    }}
-                    title={showDebug ? `Conf: ${item.confidence.toFixed(2)}` : undefined}
-                >
-                    {item.text}
-                </div>
+                <React.Fragment key={index}>
+                    <div
+                        style={{
+                            position: 'absolute',
+                            left: `${coords.left}px`,
+                            top: `${coords.top}px`,
+                            width: `${coords.width}px`,
+                            height: `${coords.height}px`,
+                            fontSize: `${fontSize}px`,
+                            lineHeight: 1,
+                            whiteSpace: 'nowrap',
+                            cursor: 'text',
+                            transformOrigin: 'left top',
+                            transform: `scaleX(${scaleX})`,
+                            color: showDebug ? 'rgba(255, 0, 0, 0.6)' : 'transparent',
+                            overflow: 'visible',
+                            fontFamily: 'sans-serif',
+                            zIndex: 5,
+                            pointerEvents: 'auto',
+                            userSelect: 'text'
+                        }}
+                        title={showDebug ? `Conf: ${item.confidence.toFixed(2)}` : undefined}
+                    >
+                        {item.text}
+                    </div>
+                    {/* Hidden space placed just after each word so that when the user
+                        selects and copies across multiple words, the browser includes
+                        a space character between them ("Word1 Word2" not "Word1Word2"). */}
+                    <span
+                        aria-hidden="true"
+                        style={{
+                            position: 'absolute',
+                            left: `${coords.left + coords.width}px`,
+                            top: `${coords.top}px`,
+                            fontSize: `${fontSize}px`,
+                            color: 'transparent',
+                            userSelect: 'text',
+                            pointerEvents: 'none',
+                            whiteSpace: 'pre',
+                        }}
+                    >
+                        {' '}
+                    </span>
+                </React.Fragment>
             );
         });
     }, [results, width, height, showDebug, isNativeMode, nativeItems, viewport]);

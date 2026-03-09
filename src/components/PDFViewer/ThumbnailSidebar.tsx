@@ -1,6 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 
+// Set worker (Vite 5+ compliant)
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.mjs',
+    import.meta.url
+).toString();
+
 // Define Props
 interface ThumbnailSidebarProps {
     file: File | null;
@@ -105,7 +111,7 @@ const Thumbnail = ({ pageIndex, pdfDoc, isActive, onClick }: { pageIndex: number
                     canvas.width = viewport.width;
 
                     if (context) {
-                        renderTaskRef.current = page.render({ canvasContext: context, viewport });
+                        renderTaskRef.current = page.render({ canvas, canvasContext: context, viewport });
                         await renderTaskRef.current.promise;
                     }
                 }

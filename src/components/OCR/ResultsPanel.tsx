@@ -2,196 +2,305 @@ import React from 'react';
 
 interface OCRResult {
     pageIndex: number;
-    results: any[]; // The generic OCR result object
+    results: any[];
     stats: any;
+}
+
+interface ActiveRedaction {
+    term: string;
+    count: number;
 }
 
 interface ResultsPanelProps {
     results: OCRResult[];
     isOpen: boolean;
     onClose: () => void;
-    onRedact: (term: string) => void; // New Prop
+    onRedact: (term: string) => void;
+    activeRedactions?: ActiveRedaction[];
+    onClearRedaction?: (term: string) => void;
 }
 
-export const ResultsPanel: React.FC<ResultsPanelProps> = ({ results, isOpen, onClose, onRedact }) => {
+export const ResultsPanel: React.FC<ResultsPanelProps> = ({
+    results, isOpen, onClose, onRedact,
+    activeRedactions = [], onClearRedaction
+}) => {
     const [searchTerm, setSearchTerm] = React.useState("");
 
     if (!isOpen) return null;
 
-    // Helper to extract full text from a page result
     const getPageText = (result: OCRResult) => {
         if (!result || !result.results) return "";
-        // Sort by reading order if not already sorted? 
-        // The worker sends them sorted by default logic usually.
-        // Simple join with newlines for blocks, spaces for lines?
-        // Let's assume result.results is array of {text, box...}
-        // A simple heuristic: if vertical distance is large -> newline. 
-        // For now, simple space join, but detailed formatting can be improved.
-        // Actually, let's look at the structure. It is likely a list of words/lines.
-        // We'll just join with spaces for now, or newlines if we detect paragraphs.
-
         return result.results.map(r => r.text).join(' ');
     };
 
     const copyToClipboard = (text: string) => {
         navigator.clipboard.writeText(text);
-        // Could show toast here
     };
 
     const handleRedactClick = () => {
-        if (searchTerm.trim()) {
-            onRedact(searchTerm);
-        }
+        if (!searchTerm.trim()) return;
+        onRedact(searchTerm.trim());
+        setSearchTerm("");
     };
 
     return (
-        <div className="results-panel" style={{
+        <div style={{
             width: '350px',
-            background: '#fff',
-            borderLeft: '1px solid #e2e8f0',
+            background: '#ffffff',
             display: 'flex',
             flexDirection: 'column',
             height: '100%',
-            boxShadow: '-4px 0 15px rgba(0,0,0,0.05)',
-            zIndex: 20
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
         }}>
-            <div className="panel-header" style={{
-                padding: '16px',
-                borderBottom: '1px solid #e2e8f0',
+            {/* ── Header ─────────────────────────────────────────────── */}
+            <div style={{
+                padding: '12px 14px 10px',
+                borderBottom: '1px solid #e5e7eb',
+                background: '#f9fafb',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '10px',
-                background: '#f8fafc'
+                gap: '9px',
             }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                    <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#2d3748', margin: 0 }}>Extracted Text</h2>
-                    <button onClick={onClose} style={{
-                        background: 'none',
-                        border: 'none',
-                        fontSize: '20px',
-                        color: '#a0aec0',
-                        cursor: 'pointer'
-                    }}>&times;</button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                        <span style={{ fontSize: '14px' }}>📝</span>
+                        <span style={{
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            color: '#111827',
+                            letterSpacing: '0.01em'
+                        }}>Texto extraído (OCR)</span>
+                    </div>
+                    <button
+                        onClick={onClose}
+                        title="Cerrar"
+                        style={{
+                            background: 'none',
+                            border: 'none',
+                            width: '26px',
+                            height: '26px',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#6b7280',
+                            fontSize: '15px',
+                            lineHeight: 1,
+                            padding: 0,
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = '#e5e7eb')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                    >
+                        ✕
+                    </button>
                 </div>
 
-                {/* Search & Redact UI */}
-                <div style={{ display: 'flex', gap: '8px' }}>
+                {/* Search / Redact bar */}
+                <div style={{ display: 'flex', gap: '6px' }}>
                     <input
                         type="text"
-                        placeholder="Search to censor..."
+                        placeholder="Palabra u oración a censurar..."
                         value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
+                        onChange={e => setSearchTerm(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleRedactClick(); }}
                         style={{
                             flex: 1,
-                            padding: '6px 10px',
-                            border: '1px solid #cbd5e0',
-                            borderRadius: '4px',
-                            fontSize: '13px',
-                            color: '#2d3748'
+                            padding: '5px 9px',
+                            border: '1px solid #d1d5db',
+                            borderRadius: '5px',
+                            fontSize: '12px',
+                            color: '#111827',
+                            background: '#fff',
+                            outline: 'none',
+                            fontFamily: 'inherit',
                         }}
                     />
                     <button
                         onClick={handleRedactClick}
                         disabled={!searchTerm.trim()}
                         style={{
-                            background: '#e53e3e',
-                            color: 'white',
+                            background: searchTerm.trim() ? '#dc2626' : '#f3f4f6',
+                            color: searchTerm.trim() ? 'white' : '#9ca3af',
                             border: 'none',
-                            borderRadius: '4px',
-                            padding: '6px 12px',
+                            borderRadius: '5px',
+                            padding: '5px 11px',
                             fontSize: '12px',
+                            fontWeight: 500,
                             cursor: searchTerm.trim() ? 'pointer' : 'not-allowed',
-                            opacity: searchTerm.trim() ? 1 : 0.6
-                        }}>
-                        Redact
+                            whiteSpace: 'nowrap',
+                            fontFamily: 'inherit',
+                        }}
+                    >
+                        ■ Censurar
                     </button>
                 </div>
+
+                {/* Active redaction chips */}
+                {activeRedactions.length > 0 && (
+                    <div style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '5px',
+                        paddingTop: '2px',
+                    }}>
+                        {activeRedactions.map(({ term, count }) => (
+                            <div
+                                key={term}
+                                title={`Haz clic en ✕ para quitar censura de "${term}"`}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    background: '#1f2937',
+                                    color: '#f9fafb',
+                                    borderRadius: '4px',
+                                    padding: '2px 7px 2px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                    maxWidth: '160px',
+                                }}
+                            >
+                                <span style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    maxWidth: '100px',
+                                }} title={term}>"{term}"</span>
+                                <span style={{ color: '#9ca3af', fontSize: '10px' }}>×{count}</span>
+                                <button
+                                    onClick={() => onClearRedaction?.(term)}
+                                    title={`Quitar censura de "${term}"`}
+                                    style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        color: '#9ca3af',
+                                        padding: '0 0 0 2px',
+                                        fontSize: '11px',
+                                        lineHeight: 1,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                    }}
+                                    onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                                    onMouseLeave={e => (e.currentTarget.style.color = '#9ca3af')}
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
 
-            <div className="panel-content" style={{
+            {/* ── Content ────────────────────────────────────────────── */}
+            <div style={{
                 flex: 1,
                 overflowY: 'auto',
-                padding: '16px',
+                padding: '10px 12px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '16px'
+                gap: '10px',
             }}>
                 {results.length === 0 ? (
-                    <div style={{ textAlign: 'center', color: '#a0aec0', marginTop: '40px', fontSize: '14px' }}>
-                        No results yet. <br /> Start OCR to extract text.
+                    <div style={{
+                        textAlign: 'center',
+                        color: '#9ca3af',
+                        marginTop: '50px',
+                        fontSize: '13px',
+                        lineHeight: 1.6,
+                    }}>
+                        <div style={{ fontSize: '30px', marginBottom: '10px', opacity: 0.35 }}>🔍</div>
+                        Sin resultados.<br />Ejecuta el OCR para extraer texto.
                     </div>
                 ) : (
-                    results.map((res, idx) => (res ? (
-                        <div key={idx} className="page-result" style={{
-                            border: '1px solid #e2e8f0',
-                            borderRadius: '8px',
-                            background: '#fff',
+                    results.map((res, idx) => res ? (
+                        <div key={idx} style={{
+                            border: '1px solid #e5e7eb',
+                            borderRadius: '7px',
                             overflow: 'hidden',
-                            marginBottom: '16px',
-                            boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                         }}>
-                            <div className="page-header" style={{
-                                padding: '10px 12px',
-                                background: '#f7fafc',
-                                borderBottom: '1px solid #edf2f7',
+                            {/* Page header row */}
+                            <div style={{
+                                padding: '7px 10px',
+                                background: '#f3f4f6',
+                                borderBottom: '1px solid #e5e7eb',
                                 display: 'flex',
                                 justifyContent: 'space-between',
                                 alignItems: 'center',
-                                fontSize: '13px',
-                                fontWeight: 600,
-                                color: '#4a5568'
                             }}>
-                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    📄 Page {res.pageIndex + 1}
+                                <span style={{
+                                    fontSize: '12px',
+                                    fontWeight: 600,
+                                    color: '#374151',
+                                }}>
+                                    Página {res.pageIndex + 1}
                                 </span>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <button
-                                        onClick={() => copyToClipboard(getPageText(res))}
-                                        title="Copy Text"
-                                        style={{
-                                            background: 'white',
-                                            border: '1px solid #cbd5e0',
-                                            padding: '4px 8px',
-                                            borderRadius: '4px',
-                                            color: '#4a5568',
-                                            cursor: 'pointer',
-                                            fontSize: '11px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '4px'
-                                        }}>
-                                        📋 Copy
-                                    </button>
-                                </div>
+                                <button
+                                    onClick={() => copyToClipboard(getPageText(res))}
+                                    title="Copiar texto"
+                                    style={{
+                                        background: 'white',
+                                        border: '1px solid #d1d5db',
+                                        padding: '3px 8px',
+                                        borderRadius: '4px',
+                                        color: '#374151',
+                                        cursor: 'pointer',
+                                        fontSize: '11px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '3px',
+                                        fontFamily: 'inherit',
+                                    }}
+                                    onMouseEnter={e => (e.currentTarget.style.background = '#f9fafb')}
+                                    onMouseLeave={e => (e.currentTarget.style.background = 'white')}
+                                >
+                                    📋 Copiar
+                                </button>
                             </div>
+
+                            {/* Editable text area */}
                             <textarea
                                 defaultValue={getPageText(res)}
                                 style={{
                                     width: '100%',
-                                    minHeight: '150px',
+                                    minHeight: '120px',
                                     border: 'none',
-                                    padding: '12px',
+                                    padding: '10px',
                                     resize: 'vertical',
-                                    fontSize: '13px',
-                                    lineHeight: '1.6',
-                                    color: '#2d3748',
-                                    fontFamily: 'Segoe UI, Roboto, Helvetica, Arial, sans-serif',
-                                    outline: 'none'
+                                    fontSize: '12px',
+                                    lineHeight: '1.65',
+                                    color: '#1f2937',
+                                    background: '#ffffff',
+                                    outline: 'none',
+                                    boxSizing: 'border-box',
+                                    fontFamily: 'inherit',
+                                    display: 'block',
                                 }}
                             />
-                            <div className="page-stats" style={{
-                                padding: '6px 12px',
-                                borderTop: '1px solid #f7fafc',
-                                fontSize: '11px',
-                                color: '#a0aec0',
-                                display: 'flex',
-                                gap: '10px'
-                            }}>
-                                <span>Confidence: {(res.stats?.averageConfidence * 100).toFixed(0)}%</span>
-                                <span>Words: {res.stats?.wordsFound}</span>
-                            </div>
+
+                            {/* Stats footer */}
+                            {res.stats && (
+                                <div style={{
+                                    padding: '5px 10px',
+                                    borderTop: '1px solid #f3f4f6',
+                                    fontSize: '10.5px',
+                                    color: '#9ca3af',
+                                    display: 'flex',
+                                    gap: '12px',
+                                    background: '#fafafa',
+                                }}>
+                                    {res.stats.averageConfidence != null && (
+                                        <span>Confianza: {(res.stats.averageConfidence * 100).toFixed(0)}%</span>
+                                    )}
+                                    {res.stats.wordsFound != null && (
+                                        <span>Palabras: {res.stats.wordsFound}</span>
+                                    )}
+                                </div>
+                            )}
                         </div>
-                    ) : null))
+                    ) : null)
                 )}
             </div>
         </div>

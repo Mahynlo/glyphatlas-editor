@@ -5,11 +5,12 @@ interface OCRButtonProps {
     status: 'idle' | 'loading' | 'processing' | 'done' | 'error';
     progress?: { current: number; total: number; status: string };
     disabled?: boolean;
+    className?: string;
 }
 
-export const OCRButton = ({ onClick, status, progress, disabled }: OCRButtonProps) => {
+export const OCRButton = ({ onClick, status, progress: _progress, disabled, className }: OCRButtonProps) => {
     return (
-        <div className="ocr-controls" style={{
+        <div className={`ocr-controls ${className || ''}`} style={{
             position: 'fixed',
             bottom: '20px',
             right: '20px',
