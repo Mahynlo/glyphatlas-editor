@@ -76,16 +76,44 @@ async fn perform_native_ocr(
 }
 
 // ---------------------------------------------------------------------------
-// PDF Export command (Windows only)
+// PDF Export commands (Windows only)
 // ---------------------------------------------------------------------------
 
-/// Export a PDF with burned-in redactions and an invisible searchable text layer.
+/// Embeds an invisible OCR text layer into a PDF and saves it to disk.
 ///
-/// # Arguments
-/// * `source_path` — Absolute path to the original PDF.
-/// * `output_path` — Absolute path for the exported PDF.
-/// * `redactions`  — Map of page_index → list of [x, y, w, h] arrays (0..1 normalized).
-/// * `ocr_data`    — Map of page_index → NativeOcrPageResult with OCR word data.
+/// This is the primary export path after OCR: the PDF bytes come from
+/// EmbedPDF's `saveAsCopy()` (written to a temp file via `write_temp_pdf`),
+/// and `ocr_data` comes from the OCR results stored in the viewer state.
+///
+/// The resulting file has text selectable/searchable in any PDF viewer.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn embed_ocr_and_save(
+    source_path: String,
+    output_path: String,
+    ocr_data: std::collections::HashMap<u32, Vec<export::OcrWordSer>>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        export::embed_text_and_save(&source_path, &output_path, ocr_data)
+    })
+    .await
+    .map_err(|e| format!("Export thread panicked: {e}"))?
+}
+
+/// Checks whether a PDF at `path` already has an extractable text layer.
+/// Returns `true` if the first few pages contain non-whitespace text.
+/// Used by the frontend to skip auto-OCR on files that are already text-based.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn check_pdf_has_text(path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        export::check_has_text(&path)
+    })
+    .await
+    .map_err(|e| format!("check_pdf_has_text thread panicked: {e}"))?
+}
+
+/// Export a PDF with burned-in redactions and an invisible searchable text layer (legacy).
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn save_pdf_with_ocr(
@@ -116,7 +144,8 @@ pub fn run() {
     // Register the native OCR and export commands only on Windows
     #[cfg(target_os = "windows")]
     let builder = builder.invoke_handler(
-        tauri::generate_handler![greet, read_file_bytes, write_temp_pdf, perform_native_ocr, save_pdf_with_ocr]
+        tauri::generate_handler![greet, read_file_bytes, write_temp_pdf, perform_native_ocr,
+                                 embed_ocr_and_save, check_pdf_has_text, save_pdf_with_ocr]
     );
 
     #[cfg(not(target_os = "windows"))]

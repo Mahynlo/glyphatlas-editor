@@ -40,6 +40,8 @@ interface DocOcrState {
     activeRedactions: { term: string; count: number; mode: RedactionMode }[];
     syncedPages: Set<number>;
     ocrData: Map<number, OcrPageData>;
+    /** True if the PDF already has a native text layer (detected via Rust pdfium on open). */
+    hasNativeText: boolean;
 }
 
 const makeEmptyDocState = (filePath: string | null = null): DocOcrState => ({
@@ -50,6 +52,7 @@ const makeEmptyDocState = (filePath: string | null = null): DocOcrState => ({
     activeRedactions: [],
     syncedPages: new Set(),
     ocrData: new Map(),
+    hasNativeText: false,
 });
 
 interface EmbedPDFViewerProps {
@@ -247,20 +250,36 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
         if (!dm) return;
 
         // ── Track documents ─────────────────────────────────────────────────
-        dm.onDocumentOpened((docState: any) => {
+        dm.onDocumentOpened(async (docState: any) => {
             const docId = docState.documentId ?? docState.id;
             if (!docId) return;
             console.log('[EmbedPDF] Document opened:', docId);
             if (!docsRef.current.has(docId)) {
                 docsRef.current.set(docId, makeEmptyDocState(null));
             }
-            // If no active doc yet, set this one as active
-            // (onActiveDocumentChanged may not fire for autoActivate)
             setActiveDocId(prev => {
                 const currentActive = prev ?? dm.getActiveDocumentId();
                 return currentActive ?? docId;
             });
             bump();
+
+            // ── Detect native text layer (async, non-blocking) ────────────────
+            // Get the file path for this document from the document manager.
+            // If the PDF already has a text layer, we can skip auto-OCR.
+            try {
+                const doc = dm.getDocument(docId);
+                const filePath: string | undefined = doc?.filePath ?? doc?.source?.path ?? doc?.name;
+                if (filePath && filePath.endsWith('.pdf')) {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    const hasText: boolean = await invoke('check_pdf_has_text', { path: filePath });
+                    if (hasText) {
+                        mutateDoc(docId, () => ({ hasNativeText: true }));
+                        console.log('[EmbedPDF] PDF already has native text layer:', filePath);
+                    }
+                }
+            } catch (_e) {
+                // Non-critical — silently ignore (Tauri may not be available in dev)
+            }
         });
 
         dm.onDocumentClosed((docId: string) => {
@@ -298,29 +317,67 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
         }
 
         // ── Intercept native download button ─────────────────────────────────
-        // EmbedPDF's toolbar download button calls exportCap.download() which
-        // just emits a downloadRequest$ event. We subscribe here and replace
-        // the browser anchor download with a Tauri native save dialog.
+        // EmbedPDF's toolbar download button emits a downloadRequest$ event.
+        // We intercept here and embed the OCR text layer via Rust (pdfium Tr3)
+        // before saving, so the output PDF is selectable in ANY viewer.
         const exportPlugin = r.getPlugin('export') as any;
         if (exportPlugin?.onRequest) {
             exportPlugin.onRequest(async ({ documentId }: { documentId: string }) => {
                 const exportCap = r.getPlugin('export')?.provides();
                 if (!exportCap) return;
                 try {
+                    // 1. Get current PDF bytes (includes committed redactions)
                     const buffer: ArrayBuffer = await exportCap.forDocument(documentId).saveAsCopy().toPromise();
+
                     try {
                         const { save } = await import('@tauri-apps/plugin-dialog');
+                        const { invoke } = await import('@tauri-apps/api/core');
+
+                        // 2. Write bytes to a temp file (Rust embed_ocr_and_save reads from path)
+                        const tempPath: string = await invoke('write_temp_pdf', {
+                            bytes: Array.from(new Uint8Array(buffer)),
+                        });
+
+                        // 3. Open native save dialog
                         const savePath = await save({
                             defaultPath: 'documento.pdf',
                             filters: [{ name: 'PDF', extensions: ['pdf'] }],
                         });
-                        if (savePath) {
+                        if (!savePath) return; // user cancelled
+
+                        // 4. Serialize OCR data for this document (page → [{text, rect}])
+                        const docState = docsRef.current.get(documentId);
+                        const ocrData: Record<number, Array<{ text: string; rect: [number, number, number, number] }>> = {};
+                        if (docState?.results) {
+                            for (const pageResult of docState.results) {
+                                if (pageResult?.results?.length) {
+                                    ocrData[pageResult.pageIndex] = pageResult.results.map((item: any) => ({
+                                        text: item.text,
+                                        rect: item.box as [number, number, number, number],
+                                    }));
+                                }
+                            }
+                        }
+
+                        const hasOcrData = Object.keys(ocrData).length > 0;
+
+                        if (hasOcrData) {
+                            // 5a. OCR data present → embed invisible text layer via Rust (pdfium Tr3)
+                            await invoke('embed_ocr_and_save', {
+                                sourcePath: tempPath,
+                                outputPath: savePath,
+                                ocrData,
+                            });
+                            console.log('[EmbedPDF] PDF guardado con capa OCR embebida:', savePath);
+                        } else {
+                            // 5b. No OCR data → just write the bytes directly
                             const { writeFile } = await import('@tauri-apps/plugin-fs');
                             await writeFile(savePath, new Uint8Array(buffer));
-                            console.log('[EmbedPDF] Guardado en:', savePath);
+                            console.log('[EmbedPDF] PDF guardado (sin OCR):', savePath);
                         }
                     } catch (_tauriErr) {
                         // Fallback: browser blob download (dev/web mode)
+                        console.warn('[EmbedPDF] Tauri unavailable, usando descarga browser:', _tauriErr);
                         const blob = new Blob([buffer], { type: 'application/pdf' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
@@ -336,6 +393,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
                 }
             });
         }
+
     }, [patchEngine, bump]);
 
     // ── Start OCR for active document ──────────────────────────────────────────
@@ -788,6 +846,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
     const ocrProgress = activeState?.progress ?? { current: 0, total: 0, status: '' };
     const ocrResults = activeState?.results ?? [];
     const activeRedactions = activeState?.activeRedactions ?? [];
+    const hasNativeText = activeState?.hasNativeText ?? false;
     const progressPct = ocrProgress.total > 0 ? Math.round((ocrProgress.current / ocrProgress.total) * 100) : 0;
 
     return (
@@ -823,6 +882,24 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
                                 <div style={{ height: '100%', width: `${progressPct}%`, background: 'linear-gradient(90deg,#818cf8,#6366f1)', borderRadius: '2px', transition: 'width 0.3s ease' }} />
                             </div>
                             <span style={{ fontSize: '11px', color: '#a5b4fc', whiteSpace: 'nowrap' }}>{ocrProgress.current}/{ocrProgress.total}</span>
+                        </div>
+                    )}
+
+                    {/* Native text badge — shown when PDF already has extractable text */}
+                    {hasNativeText && ocrStatus === 'idle' && (
+                        <div
+                            title="Este PDF ya tiene una capa de texto. El OCR puede no ser necesario."
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: '4px',
+                                padding: '4px 9px', borderRadius: '6px',
+                                background: 'rgba(34,197,94,0.15)',
+                                border: '1px solid rgba(34,197,94,0.35)',
+                                color: '#86efac', fontSize: '11px', fontWeight: 600,
+                                backdropFilter: 'blur(6px)', whiteSpace: 'nowrap',
+                            }}
+                        >
+                            <span style={{ fontSize: '12px' }}>📄</span>
+                            Con texto
                         </div>
                     )}
 
