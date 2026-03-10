@@ -12,17 +12,23 @@ import { OCRTextLayer } from '../OCR/OCRTextLayer';
 
 interface PDFViewerProps {
     file: File | null;
-    onPageRendered?: (pageIndex: number, scale: number, viewport: any) => void;
     ocrResults?: any;
-    redactions?: { [page: number]: any[] }; // [NEW]
-    onRemoveRedaction?: (pageIndex: number, boxIndex: number) => void; // [NEW]
-    isOcrProcessing?: boolean;
-    ocrProgress?: { current: number; total: number; status: string };
-    onOcrTrigger?: () => void;
-    showOverlay?: boolean; // [NEW]
+    redactions?: { [page: number]: any[] };
+    onRemoveRedaction?: (pageIndex: number, boxIndex: number) => void;
+    showOverlay?: boolean;
+    scale: number;
+    onTotalPages?: (total: number) => void;
 }
 
-export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, showOverlay = true }: PDFViewerProps) => {
+export const PDFViewer = ({
+    file,
+    ocrResults,
+    redactions,
+    onRemoveRedaction,
+    showOverlay = true,
+    scale,
+    onTotalPages
+}: PDFViewerProps) => {
     const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [pages, setPages] = useState<any[]>([]);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -36,6 +42,7 @@ export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, sho
             const loadingTask = pdfjsLib.getDocument(arrayBuffer);
             const doc = await loadingTask.promise;
             setPdfDoc(doc);
+            onTotalPages?.(doc.numPages);
 
             // For now, load first 5 pages to avoid memory kill in this demo
             const numPages = Math.min(doc.numPages, 5);
@@ -49,7 +56,7 @@ export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, sho
         loadPdf();
     }, [file]);
 
-    // Handle Scroll Navigation (from Thumbnails)
+    // Handle Scroll Navigation (from Thumbnails and Navbar)
     useEffect(() => {
         const handleScrollRequest = (e: CustomEvent) => {
             const pageIndex = e.detail.pageIndex;
@@ -97,52 +104,56 @@ export const PDFViewer = ({ file, ocrResults, redactions, onRemoveRedaction, sho
         });
 
         return () => observer.disconnect();
-    }, [pages]);
+    }, [pages, scale]); // Re-observe if scale changes because elements might move
 
     return (
-        <div className="pdf-viewer-container" ref={containerRef} style={{
-            height: '100%',
-            overflow: 'auto',
-            background: '#e5e5e5',
-            padding: '20px',
-            position: 'relative'
-        }}>
-            {file && !pdfDoc && <div>Loading PDF...</div>}
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* ── Pages ────────────────────────────────────────────────────── */}
+            <div className="pdf-viewer-container" ref={containerRef} style={{
+                flex: 1,
+                overflow: 'auto',
+                background: '#e5e5e5',
+                padding: '20px',
+                position: 'relative'
+            }}>
+                {file && !pdfDoc && <div>Loading PDF...</div>}
 
-            {pdfDoc && (
-                <div className="pages-list" style={{ display: 'flex', flexDirection: 'column', gap: '20px', alignItems: 'center' }}>
-                    {pages.map(pageNum => (
-                        <PDFPage
-                            key={pageNum}
-                            id={`pdf-page-${pageNum - 1}`}
-                            pageNumber={pageNum}
-                            pdfDoc={pdfDoc}
-                            ocrResult={ocrResults?.[pageNum - 1]}
-                            redactedBoxes={redactions?.[pageNum - 1] || []}
-                            onRemoveBox={(boxIdx) => onRemoveRedaction?.(pageNum - 1, boxIdx)}
-                            showOverlay={showOverlay}
-                        />
-                    ))}
-                </div>
-            )}
+                {pdfDoc && (
+                    <div className="pages-list" style={{ display: 'flex', flexDirection: 'column', gap: '20px', alignItems: 'center' }}>
+                        {pages.map(pageNum => (
+                            <PDFPage
+                                key={pageNum}
+                                id={`pdf-page-${pageNum - 1}`}
+                                pageNumber={pageNum}
+                                pdfDoc={pdfDoc}
+                                scale={scale}
+                                ocrResult={ocrResults?.[pageNum - 1]}
+                                redactedBoxes={redactions?.[pageNum - 1] || []}
+                                onRemoveBox={(boxIdx) => onRemoveRedaction?.(pageNum - 1, boxIdx)}
+                                showOverlay={showOverlay}
+                            />
+                        ))}
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
 
-const PDFPage = ({ id, pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox, showOverlay }: {
+const PDFPage = ({ id, pageNumber, pdfDoc, scale, ocrResult, redactedBoxes, onRemoveBox, showOverlay }: {
     id: string,
     pageNumber: number,
     pdfDoc: pdfjsLib.PDFDocumentProxy,
+    scale: number,
     ocrResult: any,
     redactedBoxes: any[],
     onRemoveBox?: (index: number) => void,
-    showOverlay?: boolean // [NEW]
+    showOverlay?: boolean
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const textLayerRef = useRef<HTMLDivElement>(null);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const renderTaskRef = useRef<any>(null);
-    const [scale] = useState(1.5);
     const [viewport, setViewport] = useState<any>(null);
 
     useEffect(() => {
@@ -203,46 +214,38 @@ const PDFPage = ({ id, pageNumber, pdfDoc, ocrResult, redactedBoxes, onRemoveBox
                 const page = await pdfDoc.getPage(pageNumber);
                 const textContent = await page.getTextContent();
 
-                if (textLayerRef.current) {
-                    textLayerRef.current.innerHTML = ''; // Clear previous
+                if (!textLayerRef.current) return;
 
-                    // Add standard PDF.js text layer CSS class
-                    textLayerRef.current.style.setProperty('--scale-factor', `${scale}`);
+                textLayerRef.current.innerHTML = '';
+                textLayerRef.current.style.setProperty('--scale-factor', `${scale}`);
 
-                    try {
-                        // PDF.js v5: TextLayer is often in the viewer module.
-                        // We use dynamic import to avoid build issues.
-                        // @ts-ignore
-                        const pdfjsViewer = await import('pdfjs-dist/web/pdf_viewer.mjs');
-                        const TextLayer = pdfjsViewer.TextLayer;
-
-                        if (TextLayer) {
-                            const layer = new TextLayer({
-                                textContentSource: textContent,
-                                container: textLayerRef.current,
-                                viewport: viewport,
-                                textDivs: []
-                            });
-                            await layer.render();
-                        } else {
-                            // Fallback check
-                            throw new Error("TextLayer not found in viewer module");
-                        }
-                    } catch (importErr) {
-                        console.warn("TextLayer dynamic import failed, checking globals...", importErr);
-                        // Fallback for some setups: Check window or main lib
-                        // @ts-ignore
-                        const TextLayer = pdfjsLib.TextLayer || window.pdfjsLib?.TextLayer;
-                        if (TextLayer) {
-                            const layer = new TextLayer({
-                                textContentSource: textContent,
-                                container: textLayerRef.current,
-                                viewport: viewport,
-                                textDivs: []
-                            });
-                            await layer.render();
-                        } else {
-                            console.error("Failed to load TextLayer from any source");
+                // pdfjs-dist v4+ uses a TextLayer *class* (not the old renderTextLayer fn).
+                // Cast to any because the .d.ts bundled with v5 may not expose TextLayer.
+                const AnyPdfLib = pdfjsLib as any;
+                if (AnyPdfLib.TextLayer) {
+                    const layer = new AnyPdfLib.TextLayer({
+                        textContentSource: textContent,
+                        container: textLayerRef.current,
+                        viewport: viewport,
+                    });
+                    await layer.render();
+                } else {
+                    // Fallback: manually place text spans at approximate positions.
+                    // This makes text selectable even if the TextLayer class is unavailable.
+                    const container = textLayerRef.current;
+                    const { width, height } = container.getBoundingClientRect();
+                    for (const item of (textContent as any).items) {
+                        if (!item.str) continue;
+                        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                        const span = document.createElement('span');
+                        span.textContent = item.str + (item.hasEOL ? '\n' : ' ');
+                        // tx[4] = x position, tx[5] = y position in CSS coords
+                        const x = tx[4];
+                        const y = tx[5];
+                        const fontSize = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+                        span.style.cssText = `position:absolute;left:${x}px;top:${y - fontSize}px;font-size:${fontSize}px;white-space:pre;transform-origin:0% 0%;`;
+                        if (width && height) { // only add if we have dimensions
+                            container.appendChild(span);
                         }
                     }
                 }

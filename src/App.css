@@ -1,1 +1,112 @@
 @import "tailwindcss";
+
+@media print {
+
+    /* Hide all UI elements and overlays with extreme prejudice */
+    header,
+    .ThumbnailSidebar-container,
+    .ResultsPanel-container,
+    .progress-container,
+    .ocr-controls,
+    .ocr-button-main,
+    .ocr-text-layer,
+    .textLayer,
+    button,
+    input,
+    label,
+    .sidebar-toggle,
+    [title*="Hide Thumbnails"],
+    [title*="Show Thumbnails"] {
+        display: none !important;
+        height: 0 !important;
+        width: 0 !important;
+        overflow: hidden !important;
+        visibility: hidden !important;
+        position: absolute !important;
+        top: -9999px !important;
+    }
+
+    /* Reset layout for natural document flow */
+    html,
+    body,
+    #root,
+    .app-container {
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
+        display: block !important;
+        background: white !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    .main-content {
+        display: block !important;
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
+        background: white !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* Target the PDF viewer containers */
+    .pdf-viewer-wrapper,
+    .pdf-viewer-container {
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
+        padding: 0 !important;
+        background: white !important;
+        display: block !important;
+        position: static !important;
+        transform: none !important;
+        /* No zoom scaling in print */
+    }
+
+    .pages-list {
+        display: block !important;
+        width: 100% !important;
+        gap: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* Individual PDF pages */
+    .pdf-page {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        margin: 0 auto !important;
+        /* Removed 10mm margin to be even more faithful */
+        box-shadow: none !important;
+        border: none !important;
+        display: block !important;
+        position: relative !important;
+        page-break-after: auto !important;
+        background: white !important;
+        width: 100% !important;
+    }
+
+    canvas {
+        max-width: 100% !important;
+        height: auto !important;
+        display: block !important;
+        margin: 0 auto !important;
+    }
+
+    /* Ensure redaction layer stays visible but its interactive title is gone */
+    .redaction-layer {
+        pointer-events: none !important;
+    }
+
+    /* Force browsers to print backgrounds (needed for redactions) */
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+
+    /* Remove browser headers and footers (URL, title, date) */
+    @page {
+        margin: 0 !important;
+    }
+}

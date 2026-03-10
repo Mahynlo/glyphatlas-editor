@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "pdf_editor",
+  "productName": "GlyphAtlas Editor",
   "version": "0.1.0",
   "identifier": "com.malco.pdfeditor",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "pdf_editor",
+        "title": "GlyphAtlas Editor",
         "width": 800,
         "height": 600,
         "additionalBrowserArgs": "--enable-unsafe-webgpu"
@@ -37,6 +37,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../public/models/Molde_oc_win/*": "./"
+    }
   }
 }

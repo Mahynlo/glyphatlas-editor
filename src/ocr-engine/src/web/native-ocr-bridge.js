@@ -74,5 +74,8 @@ export async function nativeOcrPage(pdfFilePath, pageIndex, dpi = 200) {
             height: nativeResult.image_height,
             dpi: nativeResult.dpi,
         },
+        // Raw NativeOcrPageResult from Rust — used by the PDF exporter (save_pdf_with_ocr).
+        // This preserves page_index, lines, and words with the exact shape the Tauri command expects.
+        _raw: nativeResult,
     };
 }

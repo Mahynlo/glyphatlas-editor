@@ -13,6 +13,7 @@ dist-ssr
 *.local
 skill
 
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -23,3 +24,4 @@ skill
 *.njsproj
 *.sln
 *.sw?
+Molde_oc_win
