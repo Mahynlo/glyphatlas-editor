@@ -10,6 +10,10 @@ jobs:
   build-windows:
     # Usamos la última versión de Windows disponible en los servidores de GitHub
     runs-on: windows-latest
+    
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -48,7 +52,8 @@ jobs:
         with:
           # Generará un "Borrador" (Draft) en la página de Releases de GitHub con tu instalador
           includeRelease: true
+          tagName: v__VERSION__
           releaseName: 'GlyphAtlas Editor v__VERSION__'
-          releaseBody: 'Nueva versión de GlyphAtlas Editor generada automáticamente.'
+          releaseBody: 'Nueva versión oficial de GlyphAtlas Editor (PaddleOCR Engine).'
           releaseDraft: true
           prerelease: false
