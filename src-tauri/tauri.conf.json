@@ -39,7 +39,19 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../public/models/Molde_oc_win/*": "./"
-    }
+      "../public/models/Molde_oc_win/*": "./",
+      "../public/models/paddle/*": "./models/paddle/"
+    },
+    "fileAssociations": [
+      {
+        "name": "PDF Document",
+        "ext": [
+          "pdf"
+        ],
+        "mimeType": "application/pdf",
+        "description": "Portable Document Format",
+        "role": "Editor"
+      }
+    ]
   }
 }

@@ -3,9 +3,9 @@
 // Shared serializable types (always compiled — referenced by both platforms)
 mod ocr_types;
 
-// Native Windows OCR — only compiled on Windows
-#[cfg(target_os = "windows")]
-mod ocr_native;
+
+// PaddleOCR via ocr-rs — cross-platform, open-source alternative
+mod ocr_paddle;
 
 // PDF Export — only compiled on Windows (depends on pdfium-render Windows binaries)
 #[cfg(target_os = "windows")]
@@ -48,31 +48,24 @@ fn write_temp_pdf(bytes: Vec<u8>) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Native OCR command (Windows only)
+
+// PaddleOCR command (cross-platform, open-source)
 // ---------------------------------------------------------------------------
 
-/// Run Windows-native OCR (via oneocr-rs) on a single page of a PDF.
-///
-/// # Arguments
-/// * `pdf_path`   — Absolute path to the PDF file on disk.
-///                  Using a path avoids serializing the entire PDF over the
-///                  Tauri IPC bridge.
-/// * `page_index` — Zero-based page number.
-/// * `dpi`        — Render DPI (200 = performance, 300 = high accuracy).
-#[cfg(target_os = "windows")]
+/// Run PaddleOCR (via ocr-rs / MNN) on a single page of a PDF.
+/// Uses PP-OCRv5 models with Latin character set.
+/// This is the open-source alternative to perform_native_ocr.
 #[tauri::command]
-async fn perform_native_ocr(
+async fn perform_paddle_ocr(
     pdf_path: String,
     page_index: u32,
     dpi: Option<u32>,
 ) -> Result<ocr_types::NativeOcrPageResult, String> {
-    // Run the CPU-heavy PDF render + OCR on a Tokio blocking thread so the
-    // WebView / UI thread stays responsive and doesn't show "not responding".
     tauri::async_runtime::spawn_blocking(move || -> Result<ocr_types::NativeOcrPageResult, String> {
-        ocr_native::ocr_pdf_page(&pdf_path, page_index, dpi.unwrap_or(200))
+        ocr_paddle::ocr_pdf_page_paddle(&pdf_path, page_index, dpi.unwrap_or(200))
     })
     .await
-    .map_err(|e| format!("OCR thread panicked: {e}"))?
+    .map_err(|e| format!("PaddleOCR thread panicked: {e}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +91,16 @@ async fn embed_ocr_and_save(
     })
     .await
     .map_err(|e| format!("Export thread panicked: {e}"))?
+}
+
+/// Retrieves the first command-line argument that is a PDF file path.
+/// This allows the app to open files passed by the OS (e.g., from 'Open with...').
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_startup_file() -> Option<String> {
+    std::env::args()
+        .skip(1) // Skip the executable name
+        .find(|arg| arg.to_lowercase().ends_with(".pdf"))
 }
 
 /// Checks whether a PDF at `path` already has an extractable text layer.
@@ -144,13 +147,15 @@ pub fn run() {
     // Register the native OCR and export commands only on Windows
     #[cfg(target_os = "windows")]
     let builder = builder.invoke_handler(
-        tauri::generate_handler![greet, read_file_bytes, write_temp_pdf, perform_native_ocr,
-                                 embed_ocr_and_save, check_pdf_has_text, save_pdf_with_ocr]
+        tauri::generate_handler![greet, read_file_bytes, write_temp_pdf,
+                                 perform_paddle_ocr,
+                                 embed_ocr_and_save, check_pdf_has_text, save_pdf_with_ocr,
+                                 get_startup_file]
     );
 
     #[cfg(not(target_os = "windows"))]
     let builder = builder.invoke_handler(
-        tauri::generate_handler![greet, read_file_bytes, write_temp_pdf]
+        tauri::generate_handler![greet, read_file_bytes, write_temp_pdf, perform_paddle_ocr]
     );
 
     builder

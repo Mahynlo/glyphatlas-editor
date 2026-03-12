@@ -58,6 +58,7 @@ const makeEmptyDocState = (filePath: string | null = null): DocOcrState => ({
 interface EmbedPDFViewerProps {
     showOverlay?: boolean;
     isHighAccuracy?: boolean;
+    initialFilePath?: string | null;
 }
 
 export interface EmbedPDFViewerHandle {
@@ -457,11 +458,11 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
             progress: { current: 0, total: numPages, status: 'Iniciando…' }
         }));
 
-        const dpi = isHighAccuracyRef.current ? 300 : 200;
+        const dpi = isHighAccuracyRef.current ? 800 : 400;
 
-        // For native engine: write bytes to a temp file that the Rust side can read
+        // For Rust-based PaddleOCR engine: write bytes to a temp file that the Rust side can read
         let tempFilePath: string | null = null;
-        if (OCR_ENGINE === 'native') {
+        if (OCR_ENGINE === 'paddle') {
             try {
                 const { invoke } = await import('@tauri-apps/api/core');
                 const bytes = Array.from(new Uint8Array(arrayBuffer));
@@ -478,7 +479,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
                 progress: { ...s.progress, status: `Página ${i + 1}/${numPages}` }
             }));
 
-            if (OCR_ENGINE === 'native' && tempFilePath) {
+            if (OCR_ENGINE === 'paddle' && tempFilePath) {
                 try {
                     const result = await nativeOcrPage(tempFilePath, i, dpi);
                     const s = docsRef.current.get(docId)!;
@@ -499,7 +500,7 @@ export const EmbedPDFViewer = forwardRef<EmbedPDFViewerHandle, EmbedPDFViewerPro
             }
         }
 
-        if (OCR_ENGINE === 'native') {
+        if (OCR_ENGINE === 'paddle') {
             mutateDoc(docId, () => ({ status: 'done' }));
             setIsPanelOpen(true);
         }

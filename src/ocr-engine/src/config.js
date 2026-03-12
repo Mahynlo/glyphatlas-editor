@@ -5,10 +5,9 @@
 
 // -----------------------------------------------------------------------------
 // OCR Engine selection
-// 'native' — Windows oneocr-rs (default, faster, uses Windows native OCR APIs)
-// 'paddle' — PaddleOCR ONNX running in a Web Worker (cross-platform fallback)
+// 'paddle' — Rust-based PaddleOCR (MNN) (Solo engine, cross-platform)
 // -----------------------------------------------------------------------------
-export const OCR_ENGINE = 'native';
+export const OCR_ENGINE = 'paddle';
 
 export const DEFAULT_CONFIG = {
     DETECTION: {
