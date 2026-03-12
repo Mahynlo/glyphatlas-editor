@@ -1,0 +1,82 @@
+name: "Build Linux Installer"
+
+on:
+  push:
+    branches: [ "main" ]
+  # Permite ejecutar el workflow manualmente desde la pestaña "Actions" en GitHub
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    # Usamos Ubuntu para generar paquetes .deb y .AppImage
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Es CRÍTICO habilitar LFS para descargar los modelos .mnn (~13MB)
+          lfs: true
+
+      - name: Install system dependencies (Tauri + OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            cmake \
+            clang \
+            libclang-dev \
+            patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Download pdfium Linux binary
+        run: |
+          curl -L https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz \
+            -o pdfium-linux.tgz
+          mkdir -p pdfium-tmp
+          tar -xzf pdfium-linux.tgz -C pdfium-tmp
+          cp pdfium-tmp/lib/libpdfium.so public/models/paddle/libpdfium.so
+          rm -rf pdfium-tmp pdfium-linux.tgz
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build the Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Adjunta los artefactos (.deb, .AppImage) al mismo Release que Windows
+          includeRelease: true
+          tagName: v__VERSION__
+          releaseName: 'GlyphAtlas Editor v__VERSION__'
+          releaseBody: 'Nueva versión oficial de GlyphAtlas Editor (PaddleOCR Engine).'
+          releaseDraft: true
+          prerelease: false
