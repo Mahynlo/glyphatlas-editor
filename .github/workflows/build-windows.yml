@@ -1,0 +1,54 @@
+name: "Build Windows Installer"
+
+on:
+  push:
+    branches: [ "main" ]
+  # Permite ejecutar el workflow manualmente desde la pestaña "Actions" en GitHub
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    # Usamos la última versión de Windows disponible en los servidores de GitHub
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Es CRÍTICO habilitar LFS para asegurarnos que Git sincronice y descargue correctamente 
+          # los archivos .mnn (Modelos OCR de Paddle) que pesan alrededor de 13MB.
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Añadimos el target específico para Windows
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        # npm ci es más seguro y rápido para integraciones continuas que npm i
+        run: npm ci
+
+      - name: Build the Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        with:
+          # Generará un "Borrador" (Draft) en la página de Releases de GitHub con tu instalador
+          includeRelease: true
+          releaseName: 'GlyphAtlas Editor v__VERSION__'
+          releaseBody: 'Nueva versión de GlyphAtlas Editor generada automáticamente.'
+          releaseDraft: true
+          prerelease: false

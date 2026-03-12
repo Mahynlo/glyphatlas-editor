@@ -1,10 +1,24 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import "./App.css";
 import { EmbedPDFViewer } from "./components/PDFViewer/EmbedPDFViewer";
+import { invoke } from "@tauri-apps/api/core";
 
 function App() {
     const [showOverlay, setShowOverlay] = useState(true);
     const [isHighAccuracy, setIsHighAccuracy] = useState(false);
+    const [initialFilePath, setInitialFilePath] = useState<string | null>(null);
+
+    useEffect(() => {
+        // Obtenemos el archivo pasado como argumento en el arranque (e.g. doble clic en Windows)
+        invoke<string | null>('get_startup_file')
+            .then(path => {
+                if (path) {
+                    console.log("[App] Startup file received:", path);
+                    setInitialFilePath(path);
+                }
+            })
+            .catch(console.error);
+    }, []);
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#0f172a' }}>
@@ -59,6 +73,7 @@ function App() {
                         />
                         Alta precisión
                     </label>
+
                 </div>
             </header>
 
@@ -67,6 +82,7 @@ function App() {
                 <EmbedPDFViewer
                     showOverlay={showOverlay}
                     isHighAccuracy={isHighAccuracy}
+                    initialFilePath={initialFilePath}
                 />
             </div>
         </div>
