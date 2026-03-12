@@ -39,7 +39,6 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../public/models/Molde_oc_win/*": "./",
       "../public/models/paddle/*": "./models/paddle/"
     },
     "fileAssociations": [
