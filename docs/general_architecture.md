@@ -1,61 +1,51 @@
 # Arquitectura General del Proyecto
 
-Este documento describe la arquitectura de alto nivel de la aplicación **Tauri AI PDF Editor**. La aplicación está diseñada para ejecutarse completamente en el navegador (Client-Side) utilizando tecnologías web modernas y WebAssembly para el procesamiento de IA.
+Este documento describe la arquitectura de alto nivel de **GlyphAtlas Editor**. La aplicación ha evolucionado de un motor basado en navegador a un sistema híbrido de alto rendimiento con un backend de OCR nativo en Rust.
 
 ## Diagrama de Flujo Principal
 
 ```mermaid
 graph TD
     User[Usuario] -->|Sube PDF| App["App (React)"]
-    App -->|Renderiza PDF| PDFViewer["PDF.js Viewer"]
-    App -->|Inicia OCR| Worker["OCR Worker (Web Worker)"]
+    App -->|Renderiza PDF Preview| PDFJS["PDF.js (Frontend)"]
+    App -->|Inicia OCR| Bridge["Native OCR Bridge (JS)"]
     
-    subgraph "OCR Engine (Worker)"
-        Worker -->|Decodifica Página| PdfDist["PDF.js (Dist)"]
-        Worker -->|Extrae Texto Nativo| Native["Texto Nativo"]
-        Worker -->|Renderiza Imagen| Canvas[OffscreenCanvas]
+    subgraph "Tauri Backend (Rust)"
+        Bridge -->|IPC Invoke| RustApp["lib.rs (Tauri)"]
+        RustApp -->|Carga PDF| Pdfium["Pdfium (Rust-Render)"]
+        Pdfium -->|Render a Imagen| Bitmap["Bitmap/DynamicImage"]
         
-        Canvas -->|Preprocesamiento| OpenCV["OpenCV.js"]
-        OpenCV -->|Tensores| ONNX["ONNX Runtime Web"]
-        
-        ONNX -->|Detección| PPOCR_Det["Modelo DBNet (Det)"]
-        ONNX -->|Reconocimiento| PPOCR_Rec["Modelo SVTR (Rec)"]
-        
-        PPOCR_Det -->|Cajas| Merger["Lógica Híbrida"]
-        PPOCR_Rec -->|Texto| Merger
-        Native -->|Texto| Merger
+        subgraph "OCR Engine (ocr-rs)"
+            Bitmap -->|Inferencia C++| MNN["MNN Runtime"]
+            MNN -->|Detección| PPOCR_Det["Modelo v5 (Det)"]
+            MNN -->|Reconocimiento| PPOCR_Rec["Modelo v5 (Rec)"]
+        end
     end
     
-    Merger -->|Resultados JSON| App
-    App -->|Overlay| UI["Interfaz de Usuario"]
-    UI -->|Redacción/Búsqueda| User
+    PPOCR_Rec -->|Coordenadas + Texto| RustApp
+    RustApp -->|JSON Results| App
+    App -->|Overlay / Redacción| UI["Interfaz de Usuario"]
 ```
 
 ## Componentes Clave
 
 ### 1. Frontend (React + Vite)
-- **App.tsx**: Controlador principal. Gestiona el estado del archivo, resultados de OCR y redacciones.
-- **PDFViewer**: Encapsula `pdfjs-dist` para renderizar el PDF y superponer capas (Texto, OCR, Redacción).
-- **OCRTextLayer**: Componente visual que dibuja las cajas de detección y el texto reconocido sobre el PDF.
+- **App.tsx**: Orquestador de la interfaz. Maneja el estado global del documento activo y los resultados del OCR.
+- **EmbedPDFViewer**: Componente de visualización avanzado que renderiza el PDF original y superpone las capas de geometría de texto obtenidas del backend.
+- **Selection Plugin**: Gestiona la interacción con el texto reconocido, permitiendo la selección y búsqueda precisa.
 
-### 2. OCR Worker (Web Worker)
-- **ocr.worker.js**: Hilo secundario para evitar bloquear la UI durante el procesamiento pesado.
-- **Responsabilidades**:
-    - Cargar modelos ONNX (solo una vez).
-    - Orquestar el flujo: PDF -> Imagen -> Detección -> Reconocimiento.
-    - Ejecutar lógica "Híbrida" (ignorar imágenes si hay texto nativo superpuesto).
+### 2. Backend (Rust + Tauri)
+- **lib.rs**: Define los comandos IPC. Expone el comando `perform_paddle_ocr`.
+- **ocr_paddle.rs**: Módulo central del OCR. Maneja la integración con `ocr-rs` y el renderizado de páginas mediante `pdfium-render`. Proporciona la lógica de "instancia fresca" para mantener una precisión del 98%.
 
-### 3. OCR Engine (Lógica de Negocio)
-- **ocr.js**: Clase principal que coordina los módulos.
-- **detection.js**: Maneja el modelo de detección de texto (DBNet). Implementa preprocesamiento (Letterbox, Normalización) y postprocesamiento (Unclip, Box Threshold).
-- **recognition.js**: Maneja el modelo de reconocimiento (CRNN/SVTR). Implementa decodificación CTC.
-- **utils.js**: Utilidades de imagen compartidas para optimizar memoria (Shared Canvas).
+### 3. OCR Engine (Nativo)
+- **ocr-rs**: Crata que vincula el código de Rust con el SDK nativo de PaddleOCR en C++.
+- **MNN Runtime**: Motor de inferencia ultrarrápido optimizado para CPU, eliminando la necesidad de WebGPU o WebAssembly pesado en el frontend.
 
 ## Flujo de Datos
-1. **Input**: Archivo PDF (ArrayBuffer).
-2. **Procesamiento**:
-    - Se convierte la página a imagen (Canvas).
-    - Se verifica si hay texto nativo (para modo Híbrido).
-    - La imagen pasa por la red neuronal.
-3. **Output**: Objeto JSON con coordenadas normalizadas (0..1), texto y confianza.
-4. **Visualización**: Se mapean las coordenadas al tamaño del viewport del usuario.
+1. **Input**: Ruta absoluta del archivo PDF.
+2. **Procesamiento (Rust)**:
+    - Se renderiza la página solicitada a una resolución de 400 DPI (o 800 DPI en modo High).
+    - Se invoca el motor PaddleOCR v5.
+3. **Output**: Lista de "Palabras" con coordenadas normalizadas (0..1), texto y confianza.
+4. **Visualización**: La UI mapea estas coordenadas al tamaño actual del visor para crear una experiencia de texto seleccionable sobre una imagen.
