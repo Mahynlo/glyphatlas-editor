@@ -2,6 +2,30 @@ use pdfium_render::prelude::*;
 use crate::ocr_types::NativeOcrPageResult;
 use std::collections::HashMap;
 
+fn resolve_pdfium_path(filename: &str) -> Result<String, String> {
+    // 1. Try production path (Tauri bundles public/models/paddle to models/paddle)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let prod_path = dir.join("models").join("paddle").join(filename);
+            if prod_path.exists() {
+                return prod_path.to_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| "Path not UTF-8".to_string());
+            }
+        }
+    }
+
+    // 2. Try dev path
+    let dev_path = std::path::Path::new("../public/models/paddle").join(filename);
+    if dev_path.exists() {
+        return dev_path.to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Path not UTF-8".to_string());
+    }
+
+    Err(format!("File '{}' not found in expected models/paddle locations", filename))
+}
+
 /// A simplified OCR word for JS→Rust inter-op (no pdfium dependency on the JS side).
 #[derive(serde::Deserialize, Clone)]
 pub struct OcrWordSer {
@@ -27,10 +51,10 @@ pub fn embed_text_and_save(
     output_path: &str,
     ocr_data: HashMap<u32, Vec<OcrWordSer>>,
 ) -> Result<(), String> {
+    let pdfium_path = resolve_pdfium_path("pdfium.dll")?;
     let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .map_err(|e| format!("Failed to bind to Pdfium: {}", e))?,
+        Pdfium::bind_to_library(&pdfium_path)
+            .map_err(|e| format!("Failed to bind to Pdfium at {}: {}", pdfium_path, e))?,
     );
 
     let mut document = pdfium
@@ -101,10 +125,10 @@ pub fn embed_text_and_save(
 /// its first few pages.  Used by the frontend to skip re-OCR on files that
 /// already contain a native or previously-embedded text layer.
 pub fn check_has_text(path: &str) -> Result<bool, String> {
+    let pdfium_path = resolve_pdfium_path("pdfium.dll")?;
     let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .map_err(|e| format!("Pdfium bind failed: {}", e))?,
+        Pdfium::bind_to_library(&pdfium_path)
+            .map_err(|e| format!("Pdfium bind failed at {}: {}", pdfium_path, e))?,
     );
 
     let document = pdfium
@@ -143,10 +167,10 @@ pub fn export_pdf(
     redactions: HashMap<u32, Vec<[f32; 4]>>,
     ocr_data: HashMap<u32, NativeOcrPageResult>,
 ) -> Result<(), String> {
+    let pdfium_path = resolve_pdfium_path("pdfium.dll")?;
     let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .map_err(|e| format!("Failed to bind to Pdfium: {}", e))?,
+        Pdfium::bind_to_library(&pdfium_path)
+            .map_err(|e| format!("Failed to bind to Pdfium at {}: {}", pdfium_path, e))?,
     );
 
     let mut document = pdfium

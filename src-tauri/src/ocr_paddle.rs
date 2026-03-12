@@ -90,9 +90,10 @@ pub fn ocr_pdf_page_paddle(
     PDFIUM.with(|pdfium_cell| {
         let mut pdfium_opt = pdfium_cell.borrow_mut();
         if pdfium_opt.is_none() {
+            let pdfium_path = resolve_model_path("pdfium.dll")?;
             let pdfium = Pdfium::new(
-                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name())
-                    .map_err(|e| format!("pdfium.dll missing or init failed: {e}"))?,
+                Pdfium::bind_to_library(&pdfium_path)
+                    .map_err(|e| format!("pdfium.dll init failed from {}: {}", pdfium_path, e))?,
             );
             *pdfium_opt = Some(pdfium);
         }
