@@ -1,4 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use std::path::PathBuf;
+use tauri::Manager;
 
 // Shared serializable types (always compiled — referenced by both platforms)
 mod ocr_types;
@@ -57,12 +59,15 @@ fn write_temp_pdf(bytes: Vec<u8>) -> Result<String, String> {
 /// This is the open-source alternative to perform_native_ocr.
 #[tauri::command]
 async fn perform_paddle_ocr(
+    app: tauri::AppHandle,
     pdf_path: String,
     page_index: u32,
     dpi: Option<u32>,
 ) -> Result<ocr_types::NativeOcrPageResult, String> {
+    let resource_dir: Option<PathBuf> = app.path().resource_dir().ok();
+
     tauri::async_runtime::spawn_blocking(move || -> Result<ocr_types::NativeOcrPageResult, String> {
-        ocr_paddle::ocr_pdf_page_paddle(&pdf_path, page_index, dpi.unwrap_or(200))
+        ocr_paddle::ocr_pdf_page_paddle(&pdf_path, page_index, dpi.unwrap_or(200), resource_dir)
     })
     .await
     .map_err(|e| format!("PaddleOCR thread panicked: {e}"))?

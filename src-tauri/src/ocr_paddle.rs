@@ -15,6 +15,7 @@ use crate::ocr_types::{NativeOcrPageResult, OcrLineResult, OcrWordResult};
 use ocr_rs::{OcrEngine, OcrEngineConfig};
 use pdfium_render::prelude::*;
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 // Thread-local storage for Pdfium to avoid re-loading the DLL (stateless).
 // Note: ENGINE is no longer cached here because reusing it between runs 
@@ -26,8 +27,25 @@ thread_local! {
 /// Locate model files relative to the running executable.
 /// In dev mode they're at `./public/models/paddle/`,
 /// in production (installed) Tauri places resources next to the .exe.
-fn resolve_model_path(filename: &str) -> Result<String, String> {
-    // 1. Try next to the executable (production / installed)
+fn resolve_model_path(filename: &str, resource_dir: Option<&PathBuf>) -> Result<String, String> {
+    // 1. Try the official Tauri resource directory (packaged app)
+    if let Some(resource_dir) = resource_dir {
+        let resource_path = resource_dir.join("models").join("paddle").join(filename);
+        if resource_path.exists() {
+            return resource_path.to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Path not UTF-8".to_string());
+        }
+
+        let flat_resource_path = resource_dir.join(filename);
+        if flat_resource_path.exists() {
+            return flat_resource_path.to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Path not UTF-8".to_string());
+        }
+    }
+
+    // 2. Try next to the executable (legacy packaged layouts)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             // Tauri bundles resources into the same dir or a subdir
@@ -47,7 +65,7 @@ fn resolve_model_path(filename: &str) -> Result<String, String> {
         }
     }
 
-    // 2. Try relative to CWD (dev mode: `cargo tauri dev` runs from src-tauri/)
+    // 3. Try relative to CWD (dev mode: `cargo tauri dev` runs from src-tauri/)
     let dev_path = std::path::Path::new("../public/models/paddle").join(filename);
     if dev_path.exists() {
         return dev_path.to_str()
@@ -55,7 +73,7 @@ fn resolve_model_path(filename: &str) -> Result<String, String> {
             .ok_or_else(|| "Path not UTF-8".to_string());
     }
 
-    // 3. Try CWD directly
+    // 4. Try CWD directly
     let cwd_path = std::path::Path::new("public/models/paddle").join(filename);
     if cwd_path.exists() {
         return cwd_path.to_str()
@@ -71,13 +89,14 @@ pub fn ocr_pdf_page_paddle(
     pdf_path: &str,
     page_index: u32,
     dpi: u32,
+    resource_dir: Option<PathBuf>,
 ) -> Result<NativeOcrPageResult, String> {
     
     // 1 & 2. Init PaddleOCR Engine (Fresh instance per call for max precision)
     // ------------------------------------------------------------------
-    let det_path = resolve_model_path("PP-OCRv5_mobile_det.mnn")?;
-    let rec_path = resolve_model_path("latin_PP-OCRv5_mobile_rec_infer.mnn")?;
-    let keys_path = resolve_model_path("ppocr_keys_latin.txt")?;
+    let det_path = resolve_model_path("PP-OCRv5_mobile_det.mnn", resource_dir.as_ref())?;
+    let rec_path = resolve_model_path("latin_PP-OCRv5_mobile_rec_infer.mnn", resource_dir.as_ref())?;
+    let keys_path = resolve_model_path("ppocr_keys_latin.txt", resource_dir.as_ref())?;
 
     let config = OcrEngineConfig::new();
     let engine = OcrEngine::new(&det_path, &rec_path, &keys_path, Some(config))
@@ -97,7 +116,7 @@ pub fn ocr_pdf_page_paddle(
             #[cfg(target_os = "macos")]
             let pdfium_lib = "libpdfium.dylib";
 
-            let pdfium_path = resolve_model_path(pdfium_lib)?;
+            let pdfium_path = resolve_model_path(pdfium_lib, resource_dir.as_ref())?;
             let pdfium = Pdfium::new(
                 Pdfium::bind_to_library(&pdfium_path)
                     .map_err(|e| format!("pdfium init failed from {}: {}", pdfium_path, e))?,
